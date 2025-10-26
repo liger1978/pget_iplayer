@@ -6,6 +6,7 @@ import argparse
 import codecs
 import errno
 import itertools
+import time
 import os
 import re
 import requests
@@ -22,7 +23,7 @@ from tqdm import tqdm
 
 from . import __version__
 
-PID_PATTERN = re.compile(r"([a-z0-9]{8})", re.IGNORECASE)
+PID_PATTERN = re.compile(r"([a-z][b-df-hj-np-tv-z0-9]{7,10})", re.IGNORECASE)
 
 
 PROGRESS_LINE = re.compile(
@@ -44,22 +45,50 @@ class ColourStyle:
     ansi_code: str
 
 
+# COLOUR_STYLES: Tuple[ColourStyle, ...] = (
+#     ColourStyle("#5f6f52", "\033[38;2;95;111;82m"),
+#     ColourStyle("#4c566a", "\033[38;2;76;86;106m"),
+#     ColourStyle("#6b8a89", "\033[38;2;107;138;137m"),
+#     ColourStyle("#836f7c", "\033[38;2;131;111;124m"),
+#     ColourStyle("#998f7a", "\033[38;2;153;143;122m"),
+#     ColourStyle("#b08e7d", "\033[38;2;176;142;125m"),
+#     ColourStyle("#7b8b8e", "\033[38;2;123;139;142m"),
+#     ColourStyle("#597081", "\033[38;2;89;112;129m"),
+#     ColourStyle("#8c7267", "\033[38;2;140;114;103m"),
+#     ColourStyle("#a38f85", "\033[38;2;163;143;133m"),
+#     ColourStyle("#5c5f70", "\033[38;2;92;95;112m"),
+#     ColourStyle("#708070", "\033[38;2;112;128;112m"),
+# )
+
 COLOUR_STYLES: Tuple[ColourStyle, ...] = (
-    ColourStyle("#ff5555", "\033[38;2;255;85;85m"),
-    ColourStyle("#50fa7b", "\033[38;2;80;250;123m"),
-    ColourStyle("#f1fa8c", "\033[38;2;241;250;140m"),
-    ColourStyle("#bd93f9", "\033[38;2;189;147;249m"),
-    ColourStyle("#ff79c6", "\033[38;2;255;121;198m"),
-    ColourStyle("#8be9fd", "\033[38;2;139;233;253m"),
-    ColourStyle("#ffffff", "\033[38;2;255;255;255m"),
-    ColourStyle("#ffb86c", "\033[38;2;255;184;108m"),
-    ColourStyle("#ff6e6e", "\033[38;2;255;110;110m"),
-    ColourStyle("#7aa2f7", "\033[38;2;122;162;247m"),
-    ColourStyle("#f7768e", "\033[38;2;247;118;142m"),
-    ColourStyle("#2ac3de", "\033[38;2;42;195;222m"),
+    # 1. Deep charcoal – for primary text on light background or background on dark console
+    ColourStyle("#2e2e2e", "\033[38;2;46;46;46m"),
+    # 2. Warm mid-neutral – for secondary text
+    ColourStyle("#606060", "\033[38;2;96;96;96m"),
+    # 3. Soft off-white / chalk – for backgrounds or highlighting text on dark
+    ColourStyle("#f5f5f5", "\033[38;2;245;245;245m"),
+    # 4. Muted emerald – for active/highlight state
+    ColourStyle("#1a4d41", "\033[38;2;26;77;65m"),
+    # 5. Dusty teal – alternative accent
+    ColourStyle("#4e7f7b", "\033[38;2;78;127;123m"),
+    # 6. Cognac amber – for warnings or emphasis
+    ColourStyle("#b37537", "\033[38;2;179;117;55m"),
+    # 7. Slate blue – for links / info text
+    ColourStyle("#475d7b", "\033[38;2;71;93;123m"),
+    # 8. Muted burgundy – for errors or critical/high state
+    ColourStyle("#7a2f3b", "\033[38;2;122;47;59m"),
+    # 9. Warm taupe – for subtle backgrounds or blocks
+    ColourStyle("#8f8173", "\033[38;2;143;129;115m"),
+    #10. Soft olive – for success/ok state
+    ColourStyle("#657253", "\033[38;2;101;114;83m"),
+    #11. Cool slate-grey blue – for disabled/less important
+    ColourStyle("#5a6b7d", "\033[38;2;90;107;125m"),
+    #12. Pale champagne – for light accent or highlighting selection
+    ColourStyle("#e8ddcf", "\033[38;2;232;221;207m"),
 )
 
-STREAM_PRIORITY = ("audio", "audio+video", "video")
+
+STREAM_PRIORITY = ("waiting", "audio", "audio+video", "video", "converting")
 
 PROGRESS_LOCK = threading.Lock()
 PROGRESS_BARS: Dict[tuple[str, str], tqdm] = {}
@@ -67,6 +96,7 @@ PID_COLOUR: Dict[str, ColourStyle] = {}
 COMPLETED_BARS: set[tuple[str, str]] = set()
 STREAM_STATE: Dict[tuple[str, str], tuple[str | None, str | None, bool]] = {}
 PID_LABELS: Dict[str, str] = {}
+PSEUDO_TIMERS: Dict[tuple[str, str], Dict[str, float]] = {}
 
 DEFAULT_SPEED = "--.- Mb/s"
 DEFAULT_ETA = "--:--:--"
@@ -75,6 +105,8 @@ SPEED_FIELD_WIDTH = 10
 META_WIDTH = 5 + ETA_FIELD_WIDTH + 2 + SPEED_FIELD_WIDTH + 1  # "(ETA " + eta + ", " + speed + ")"
 PROGRAM_LABEL_WIDTH = 42
 STREAM_FIELD_WIDTH = 12
+PSEUDO_STREAMS = {"waiting", "converting"}
+PERCENT_WIDTH = 8
 
 
 def _reset_progress_state() -> None:
@@ -88,7 +120,9 @@ def _reset_progress_state() -> None:
         PID_COLOUR.clear()
         COMPLETED_BARS.clear()
         STREAM_STATE.clear()
+        PSEUDO_TIMERS.clear()
         PID_LABELS.clear()
+        PSEUDO_TIMERS.clear()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -139,6 +173,10 @@ def _emit_line(pid: str, colour: ColourStyle, text: str) -> None:
     stripped = text.strip()
     if not stripped:
         return
+    lower = stripped.lower()
+    if "converting" in lower or "tagging" in lower:
+        colour = _get_colour(pid, colour)
+        _start_pseudo_stream(pid, "converting", colour)
     match = PROGRESS_LINE.match(stripped)
     if not match:
         complete_match = COMPLETED_LINE.search(stripped)
@@ -153,6 +191,9 @@ def _emit_line(pid: str, colour: ColourStyle, text: str) -> None:
         stream = match.group("stream").strip().lower()
         speed = match.group("speed").strip()
         eta = match.group("eta").strip()
+        if stream not in {"waiting", "converting"}:
+            colour = _get_colour(pid, colour)
+            _complete_pseudo_stream(pid, "waiting", colour)
     _update_progress(pid, stream, percent, colour, speed, eta)
 
 
@@ -173,7 +214,9 @@ def _get_colour(pid: str, default: ColourStyle) -> ColourStyle:
 def _normalise_pid(value: str) -> str:
     matches = PID_PATTERN.findall(value)
     if matches:
-        return matches[-1].lower()
+        for candidate in reversed(matches):
+            if any(ch.isdigit() for ch in candidate):
+                return candidate.lower()
     return value.strip().lower()
 
 
@@ -285,11 +328,44 @@ def _compose_desc(
 ) -> str:
     percent_display = 100.0 if completed else percent
     stream_display = f"{stream}"[:STREAM_FIELD_WIDTH].ljust(STREAM_FIELD_WIDTH)
-    return (
-        f"{_program_label(pid)} {stream_display}"
-        f"{_format_percent(percent_display)}"
-        f"{_format_meta(speed, eta, completed)}"
-    )
+    if stream in PSEUDO_STREAMS:
+        percent_part = _format_percent(percent_display)
+        meta_part = _format_meta(speed, eta, completed)
+        if not completed:
+            percent_part = " " * PERCENT_WIDTH
+            meta_part = " " * META_WIDTH
+    else:
+        percent_part = _format_percent(percent_display)
+        meta_part = _format_meta(speed, eta, completed)
+    return f"{_program_label(pid)} {stream_display}{percent_part}{meta_part}"
+
+
+def _start_pseudo_stream(pid: str, stream: str, colour: ColourStyle) -> None:
+    key = (pid, stream)
+    now = time.perf_counter()
+    if key in PSEUDO_TIMERS:
+        return
+    PSEUDO_TIMERS[key] = {"start": now, "last": 0.0}
+    _update_progress(pid, stream, 1.0, colour, None, None)
+
+
+def _tick_pseudo_stream(pid: str, stream: str, colour: ColourStyle) -> None:
+    key = (pid, stream)
+    timer = PSEUDO_TIMERS.get(key)
+    if not timer:
+        return
+    now = time.perf_counter()
+    elapsed = now - timer["start"]
+    percent = min(99.0, (elapsed / 300.0) * 100.0)
+    _update_progress(pid, stream, percent, colour, None, None)
+
+
+def _complete_pseudo_stream(pid: str, stream: str, colour: ColourStyle) -> None:
+    key = (pid, stream)
+    if key not in PSEUDO_TIMERS:
+        return
+    PSEUDO_TIMERS.pop(key, None)
+    _update_progress(pid, stream, 100.0, colour, None, "00:00:00")
 
 
 def _reassign_positions_locked() -> None:
@@ -461,6 +537,8 @@ def _run_get_iplayer(
         return
 
     os.close(slave_fd)
+    colour = _get_colour(pid, colour)
+    _start_pseudo_stream(pid, "waiting", colour)
     decoder = codecs.getincrementaldecoder("utf-8")()
     buffer = ""
     last_partial = ""
@@ -470,6 +548,8 @@ def _run_get_iplayer(
             if not ready:
                 if process.poll() is not None:
                     break
+                _tick_pseudo_stream(pid, "waiting", colour)
+                _tick_pseudo_stream(pid, "converting", colour)
                 continue
             try:
                 raw = os.read(master_fd, 1024)
@@ -487,6 +567,8 @@ def _run_get_iplayer(
             if not text:
                 continue
             buffer += text
+            _tick_pseudo_stream(pid, "waiting", colour)
+            _tick_pseudo_stream(pid, "converting", colour)
             saw_carriage = False
             while True:
                 delimiter_index = _next_delimiter(buffer)
@@ -540,6 +622,8 @@ def _run_get_iplayer(
             )
             bar.refresh()
         _reassign_positions_locked()
+    _complete_pseudo_stream(pid, "waiting", colour)
+    _complete_pseudo_stream(pid, "converting", colour)
 
 
 def _cycle_colors() -> Iterable[ColourStyle]:
