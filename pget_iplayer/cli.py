@@ -8,16 +8,21 @@ import errno
 import itertools
 import os
 import re
+import requests
 import select
 import subprocess
 import sys
 import threading
 from dataclasses import dataclass
-from typing import Dict, Iterable, Sequence, Tuple
+from datetime import datetime
+from typing import Dict, Iterable, Optional, Sequence, Tuple
 
 from tqdm import tqdm
 
 from . import __version__
+
+PID_PATTERN = re.compile(r"([a-z0-9]{8})", re.IGNORECASE)
+
 
 PROGRESS_LINE = re.compile(
     r"^\s*(?P<percent>\d+(?:\.\d+)?)%.*?@\s*(?P<speed>.*?)\s+ETA:\s*(?P<eta>\S+).*?\[(?P<stream>[^\]]+)\]\s*$",
@@ -54,12 +59,15 @@ PROGRESS_BARS: Dict[tuple[str, str], tqdm] = {}
 PID_COLOUR: Dict[str, ColourStyle] = {}
 COMPLETED_BARS: set[tuple[str, str]] = set()
 STREAM_STATE: Dict[tuple[str, str], tuple[str | None, str | None, bool]] = {}
+PID_LABELS: Dict[str, str] = {}
 
 DEFAULT_SPEED = "--.- Mb/s"
 DEFAULT_ETA = "--:--:--"
 ETA_FIELD_WIDTH = 8
 SPEED_FIELD_WIDTH = 10
 META_WIDTH = 5 + ETA_FIELD_WIDTH + 2 + SPEED_FIELD_WIDTH + 1  # "(ETA " + eta + ", " + speed + ")"
+PROGRAM_LABEL_WIDTH = 42
+STREAM_FIELD_WIDTH = 12
 
 
 def _reset_progress_state() -> None:
@@ -73,6 +81,7 @@ def _reset_progress_state() -> None:
         PID_COLOUR.clear()
         COMPLETED_BARS.clear()
         STREAM_STATE.clear()
+        PID_LABELS.clear()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -99,6 +108,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _command_for_pid(pid: str) -> Sequence[str]:
+    normalised = _normalise_pid(pid)
     return [
         "get_iplayer",
         "--get",
@@ -107,7 +117,7 @@ def _command_for_pid(pid: str) -> Sequence[str]:
         "--force",
         "--overwrite",
         "--tv-quality=fhd,hd,sd",
-        f"--pid={pid}",
+        f"--pid={normalised}",
     ]
 
 
@@ -146,6 +156,51 @@ def _get_colour(pid: str, default: ColourStyle) -> ColourStyle:
         return PID_COLOUR.setdefault(pid, default)
 
 
+def _normalise_pid(value: str) -> str:
+    match = PID_PATTERN.search(value)
+    if match:
+        return match.group(1).lower()
+    return value.strip().lower()
+
+
+def _truncate_title(title: str, max_len: int = 10) -> str:
+    clean = (title or "").strip()
+    if len(clean) <= max_len:
+        return clean.ljust(max_len)
+    return clean[: max_len - 1] + "…"
+
+
+def _two_digit(value: str | int | None) -> str:
+    if value is None:
+        return "00"
+    if isinstance(value, int):
+        return f"{value % 100:02d}"
+    if isinstance(value, str) and value.isdigit():
+        return f"{int(value) % 100:02d}"
+    return "00"
+
+
+def _build_program_label(pid: str) -> str:
+    try:
+        metadata = bbc_metadata_from_pid(pid)
+    except Exception:
+        metadata = {}
+
+    show = _truncate_title(metadata.get("show_title", ""))
+    episode = _truncate_title(metadata.get("episode_title", ""))
+    season_number = _two_digit(metadata.get("season_number"))
+    episode_number = _two_digit(metadata.get("episode_number"))
+
+    base = (
+        f"{pid}: {show} - s{season_number}e{episode_number} - {episode}"
+    )
+    if len(base) < PROGRAM_LABEL_WIDTH:
+        base = base.ljust(PROGRAM_LABEL_WIDTH)
+    elif len(base) > PROGRAM_LABEL_WIDTH:
+        base = base[:PROGRAM_LABEL_WIDTH]
+    return base
+
+
 def _stream_sort_key(stream: str) -> tuple[int, int, str]:
     for index, name in enumerate(STREAM_PRIORITY):
         if stream.startswith(name):
@@ -160,12 +215,16 @@ def _sorted_keys() -> list[tuple[str, str]]:
     )
 
 
-def _format_label(pid: str, stream: str, width: int = 14) -> str:
-    if len(stream) <= width:
-        stream_part = stream.ljust(width)
+def _program_label(pid: str) -> str:
+    label = PID_LABELS.get(pid)
+    if label:
+        return label
+    fallback = f"{pid}: "
+    if len(fallback) < PROGRAM_LABEL_WIDTH:
+        fallback = fallback.ljust(PROGRAM_LABEL_WIDTH)
     else:
-        stream_part = stream[: width - 1] + "…"
-    return f"{pid} {stream_part}: "
+        fallback = fallback[: PROGRAM_LABEL_WIDTH]
+    return fallback
 
 
 def _format_percent(value: float) -> str:
@@ -189,8 +248,9 @@ def _compose_desc(
     completed: bool = False,
 ) -> str:
     percent_display = 100.0 if completed else percent
+    stream_display = f"{stream}"[:STREAM_FIELD_WIDTH].ljust(STREAM_FIELD_WIDTH)
     return (
-        f"{_format_label(pid, stream)}"
+        f"{_program_label(pid)} {stream_display}"
         f"{_format_percent(percent_display)}"
         f"{_format_meta(speed, eta, completed)}"
     )
@@ -449,43 +509,157 @@ def _run_get_iplayer(
 def _cycle_colors() -> Iterable[ColourStyle]:
     return itertools.cycle(COLOUR_STYLES if COLOUR_STYLES else (ColourStyle("white"),))
 
+def _safe_int_to_str(n: Optional[int]) -> str:
+    if isinstance(n, int):
+        return str(n)
+    if isinstance(n, str) and n.isdigit():
+        return n
+    return ""
+
+def _extract_broadcast_date(node: dict) -> str:
+    """Return YYYYMMDD from first_broadcast_date if available."""
+    date_str = node.get("first_broadcast_date")
+    if not date_str:
+        return ""
+    try:
+        dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        return dt.strftime("%Y%m%d")
+    except Exception:
+        return ""
+
+def bbc_metadata_from_pid(pid: str, timeout: int = 10) -> Dict[str, str]:
+    """
+    Returns:
+    {
+      "show_title": str,        # brand title
+      "season_number": str,     # series number or "0" for specials
+      "episode_number": str,    # episode position or broadcast date YYYYMMDD
+      "episode_title": str      # episode title
+    }
+    """
+    SPECIALS_REGEX = re.compile(r"\bspecials?\b", re.IGNORECASE)
+
+    url = f"https://www.bbc.co.uk/programmes/{pid}.json"
+    r = requests.get(url, timeout=timeout)
+    r.raise_for_status()
+    data = r.json()
+    prog = data.get("programme") or {}
+
+    episode_title = str(prog.get("title") or "")
+    episode_pos = prog.get("position") if prog.get("type") == "episode" else None
+    display_subtitle = ""
+    if isinstance(prog.get("display_title"), dict):
+        display_subtitle = str(prog["display_title"].get("subtitle") or "")
+
+    # Walk parents to find series + brand
+    node = prog
+    brand_title = ""
+    series_title = ""
+    series_pos = None
+    ancestor_titles = []
+
+    while isinstance(node, dict) and isinstance(node.get("parent"), dict):
+        parent_prog = node["parent"].get("programme")
+        if not isinstance(parent_prog, dict):
+            break
+
+        ptype = parent_prog.get("type")
+        ptitle = parent_prog.get("title")
+        if isinstance(ptitle, str) and ptitle:
+            ancestor_titles.append(ptitle)
+
+        if ptype == "series":
+            if series_pos is None:
+                series_pos = parent_prog.get("position")
+            if not series_title:
+                series_title = str(parent_prog.get("title") or "")
+        elif ptype == "brand":
+            if not brand_title:
+                brand_title = str(parent_prog.get("title") or "")
+            break
+
+        node = parent_prog
+
+    if not brand_title and prog.get("type") == "brand":
+        brand_title = str(prog.get("title") or "")
+
+    # Determine season number
+    season_str = _safe_int_to_str(series_pos)
+    if not season_str:
+        specials_hints = []
+        if series_title:
+            specials_hints.append(series_title)
+        if display_subtitle:
+            specials_hints.append(display_subtitle.split(",", 1)[0].strip())
+        specials_hints.extend(t for t in ancestor_titles if isinstance(t, str))
+        if any(SPECIALS_REGEX.search(t or "") for t in specials_hints):
+            season_str = "0"
+
+    # Episode number or fallback date
+    ep_str = _safe_int_to_str(episode_pos)
+    if not ep_str:
+        ep_str = _extract_broadcast_date(prog)
+
+    return {
+        "show_title": str(brand_title or ""),
+        "season_number": season_str,
+        "episode_number": ep_str,
+        "episode_title": episode_title,
+    }
 
 def main(argv: Sequence[str] | None = None) -> int:
     _reset_progress_state()
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    normalised_pids = [_normalise_pid(pid) for pid in args.pids]
+
+    for pid in normalised_pids:
+        if pid not in PID_LABELS:
+            PID_LABELS[pid] = _build_program_label(pid)
+
     threads = []
     results: Dict[str, int] = {}
     print_lock = threading.Lock()
     results_lock = threading.Lock()
-    for pid, color in zip(args.pids, _cycle_colors()):
-        thread = threading.Thread(
-            target=_run_get_iplayer,
-            name=f"get-iplayer-{pid}",
-            args=(pid, color, results, print_lock, results_lock),
-            daemon=True,
-        )
-        threads.append(thread)
-        thread.start()
+    cursor_hidden = False
+    try:
+        if sys.stdout.isatty():
+            sys.stdout.write("\033[?25l")
+            sys.stdout.flush()
+            cursor_hidden = True
 
-    for thread in threads:
-        thread.join()
+        for pid, color in zip(normalised_pids, _cycle_colors()):
+            thread = threading.Thread(
+                target=_run_get_iplayer,
+                name=f"get-iplayer-{pid}",
+                args=(pid, color, results, print_lock, results_lock),
+                daemon=True,
+            )
+            threads.append(thread)
+            thread.start()
 
-    summary_lines = _finalize_bars()
-    failures = {pid: code for pid, code in results.items() if code != 0}
+        for thread in threads:
+            thread.join()
 
-    if summary_lines:
-        sys.stdout.write("\r")
-        sys.stdout.flush()
-    for line in summary_lines:
-        print(line)
+        summary_lines = _finalize_bars()
+        failures = {pid: code for pid, code in results.items() if code != 0}
 
-    if failures:
-        for pid, code in failures.items():
-            tqdm.write(f"{pid}: download failed with exit code {code}")
-        return 1
-    return 0
+        if summary_lines:
+            sys.stdout.write("\r")
+            sys.stdout.flush()
+        for line in summary_lines:
+            print(line)
+
+        if failures:
+            for pid, code in failures.items():
+                tqdm.write(f"{pid}: download failed with exit code {code}")
+            return 1
+        return 0
+    finally:
+        if cursor_hidden and sys.stdout.isatty():
+            sys.stdout.write("\033[?25h")
+            sys.stdout.flush()
 
 
 if __name__ == "__main__":
