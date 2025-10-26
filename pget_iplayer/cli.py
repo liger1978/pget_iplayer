@@ -59,7 +59,7 @@ DEFAULT_SPEED = "--.- Mb/s"
 DEFAULT_ETA = "--:--:--"
 ETA_FIELD_WIDTH = 8
 SPEED_FIELD_WIDTH = 10
-META_WIDTH = 5 + ETA_FIELD_WIDTH + 2 + SPEED_FIELD_WIDTH + 2  # "(ETA " + eta + ", " + speed + ") "
+META_WIDTH = 5 + ETA_FIELD_WIDTH + 2 + SPEED_FIELD_WIDTH + 1  # "(ETA " + eta + ", " + speed + ")"
 
 
 def _reset_progress_state() -> None:
@@ -177,7 +177,7 @@ def _format_meta(speed: str | None, eta: str | None, completed: bool = False) ->
         return "(completed)".ljust(META_WIDTH)
     eta_val = (eta or DEFAULT_ETA)[:ETA_FIELD_WIDTH].ljust(ETA_FIELD_WIDTH)
     speed_val = (speed or DEFAULT_SPEED)[:SPEED_FIELD_WIDTH].rjust(SPEED_FIELD_WIDTH)
-    return f"(ETA {eta_val}, {speed_val}) ".ljust(META_WIDTH)
+    return f"(ETA {eta_val}, {speed_val})".ljust(META_WIDTH)
 
 
 def _compose_desc(
@@ -236,10 +236,10 @@ def _finalize_bars() -> list[str]:
             bar_segment_coloured = bar_segment
             if colour_style:
                 bar_segment_coloured = f"{colour_style.ansi_code}{bar_segment}{RESET}"
-            lines.append(
-                f"{_compose_desc(pid, stream, percent, speed, eta, completed)}"
-                f"|{bar_segment_coloured}|"
-            )
+            desc = _compose_desc(pid, stream, percent, speed, eta, completed)
+            if completed:
+                desc = desc.rstrip() + " "
+            lines.append(f"{desc}|{bar_segment_coloured}|")
         for bar in bars:
             bar.leave = False
         PROGRESS_BARS.clear()
