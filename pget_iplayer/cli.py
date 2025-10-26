@@ -109,7 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
         "pids",
         metavar="PID",
         nargs="+",
-        help="One or more BBC programme, series (season) or brand (show) pids to download.",
+        help="One or more BBC programme, series (season) or brand (show) PIDs or URLs to download.",
     )
     parser.add_argument(
         "-t",
@@ -171,9 +171,9 @@ def _get_colour(pid: str, default: ColourStyle) -> ColourStyle:
 
 
 def _normalise_pid(value: str) -> str:
-    match = PID_PATTERN.search(value)
-    if match:
-        return match.group(1).lower()
+    matches = PID_PATTERN.findall(value)
+    if matches:
+        return matches[-1].lower()
     return value.strip().lower()
 
 

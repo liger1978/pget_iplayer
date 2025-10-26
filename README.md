@@ -13,7 +13,7 @@ pget_iplayer is a thin Python wrapper that launches multiple `get_iplayer` downl
 uv run -- pget-iplayer [-t THREADS] <PID> [PID ...]
 ```
 
-- Supply one or more BBC programme, series (season) or brand (show) pids as positional arguments.
+- Supply one or more BBC iPlayer PIDs or URLs (episode/series/brand) as positional arguments. URLs are normalised to the correct episode PID automatically.
 - Brand and series PIDs are expanded automatically so all child episodes are queued.
 - Every pid is downloaded via `get_iplayer --get --subtitles --subs-embed --force --overwrite --tv-quality=fhd,hd,sd --pid=<PID>`.
 - Use `-t/--threads` to limit concurrent downloads (defaults to the number of CPU cores).
