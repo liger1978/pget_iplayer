@@ -11,6 +11,8 @@ import re
 import select
 import subprocess
 import threading
+import platform
+import shutil
 from dataclasses import dataclass
 from typing import Dict, Iterable, Sequence, Tuple
 
@@ -53,6 +55,31 @@ DEFAULT_ETA = "--:--:--"
 ETA_FIELD_WIDTH = 8
 SPEED_FIELD_WIDTH = 10
 META_WIDTH = 5 + ETA_FIELD_WIDTH + 2 + SPEED_FIELD_WIDTH + 2  # "(ETA " + eta + ", " + speed + ") "
+
+
+REQUIRED_TOOLS: dict[str, tuple[str, ...]] = {
+    "get_iplayer": ("get_iplayer",),
+    "AtomicParsley": ("AtomicParsley", "atomicparsley"),
+    "ffmpeg": ("ffmpeg",),
+}
+
+INSTALL_HINTS: dict[str, dict[str, str]] = {
+    "Linux": {
+        "get_iplayer": "sudo apt install get-iplayer",
+        "AtomicParsley": "sudo apt install atomicparsley",
+        "ffmpeg": "sudo apt install ffmpeg",
+    },
+    "Darwin": {
+        "get_iplayer": "brew install get_iplayer",
+        "AtomicParsley": "brew install atomicparsley",
+        "ffmpeg": "brew install ffmpeg",
+    },
+    "Windows": {
+        "get_iplayer": "choco install get-iplayer",
+        "AtomicParsley": "choco install atomicparsley",
+        "ffmpeg": "choco install ffmpeg",
+    },
+}
 
 
 def _reset_progress_state() -> None:
@@ -397,10 +424,37 @@ def _cycle_colors() -> Iterable[ColourStyle]:
     return itertools.cycle(COLOUR_STYLES if COLOUR_STYLES else (ColourStyle("white"),))
 
 
+def _missing_tools() -> list[str]:
+    missing = []
+    for tool, candidates in REQUIRED_TOOLS.items():
+        if not any(shutil.which(candidate) for candidate in candidates):
+            missing.append(tool)
+    return missing
+
+
+def _print_tool_help(missing: Iterable[str]) -> None:
+    system = platform.system()
+    hints = INSTALL_HINTS.get(system, {})
+    print("The following required tools were not found in PATH:")
+    for tool in missing:
+        hint = hints.get(tool)
+        if hint:
+            print(f"  - {tool}: {hint}")
+        else:
+            print(f"  - {tool}: install {tool} and ensure it is available in PATH")
+    if system not in INSTALL_HINTS:
+        print(f"Detected platform '{system}' has no specific guidance; please install the tools manually.")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     _reset_progress_state()
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    missing = _missing_tools()
+    if missing:
+        _print_tool_help(missing)
+        return 1
 
     threads = []
     results: Dict[str, int] = {}
