@@ -13,6 +13,7 @@ import select
 import subprocess
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, Iterable, Optional, Sequence, Tuple
@@ -44,12 +45,18 @@ class ColourStyle:
 
 
 COLOUR_STYLES: Tuple[ColourStyle, ...] = (
-    ColourStyle("red", "\033[91m"),
-    ColourStyle("green", "\033[92m"),
-    ColourStyle("yellow", "\033[93m"),
-    ColourStyle("blue", "\033[94m"),
-    ColourStyle("magenta", "\033[95m"),
-    ColourStyle("cyan", "\033[96m"),
+    ColourStyle("#ff5555", "\033[38;2;255;85;85m"),
+    ColourStyle("#50fa7b", "\033[38;2;80;250;123m"),
+    ColourStyle("#f1fa8c", "\033[38;2;241;250;140m"),
+    ColourStyle("#bd93f9", "\033[38;2;189;147;249m"),
+    ColourStyle("#ff79c6", "\033[38;2;255;121;198m"),
+    ColourStyle("#8be9fd", "\033[38;2;139;233;253m"),
+    ColourStyle("#ffffff", "\033[38;2;255;255;255m"),
+    ColourStyle("#ffb86c", "\033[38;2;255;184;108m"),
+    ColourStyle("#ff6e6e", "\033[38;2;255;110;110m"),
+    ColourStyle("#7aa2f7", "\033[38;2;122;162;247m"),
+    ColourStyle("#f7768e", "\033[38;2;247;118;142m"),
+    ColourStyle("#2ac3de", "\033[38;2;42;195;222m"),
 )
 
 STREAM_PRIORITY = ("audio", "audio+video", "video")
@@ -102,7 +109,14 @@ def build_parser() -> argparse.ArgumentParser:
         "pids",
         metavar="PID",
         nargs="+",
-        help="One or more BBC programme pids or URLs to download.",
+        help="One or more BBC programme, series (season) or brand (show) pids to download.",
+    )
+    parser.add_argument(
+        "-t",
+        "--threads",
+        type=int,
+        default=os.cpu_count() or 4,
+        help="Maximum number of parallel download workers (default: %(default)s)",
     )
     return parser
 
@@ -199,6 +213,28 @@ def _build_program_label(pid: str) -> str:
     elif len(base) > PROGRAM_LABEL_WIDTH:
         base = base[:PROGRAM_LABEL_WIDTH]
     return base
+
+
+def _expand_pids(pids: Sequence[str]) -> list[str]:
+    expanded: list[str] = []
+    seen: set[str] = set()
+
+    for raw_pid in pids:
+        pid = _normalise_pid(raw_pid)
+        try:
+            episode_pids = [
+                _normalise_pid(ep) for ep in get_bbc_episode_pids(pid)
+            ]
+        except Exception:
+            episode_pids = []
+
+        candidates = episode_pids or [pid]
+        for candidate in candidates:
+            if candidate not in seen:
+                expanded.append(candidate)
+                seen.add(candidate)
+
+    return expanded
 
 
 def _stream_sort_key(stream: str) -> tuple[int, int, str]:
@@ -607,18 +643,60 @@ def bbc_metadata_from_pid(pid: str, timeout: int = 10) -> Dict[str, str]:
         "episode_title": episode_title,
     }
 
+def get_bbc_episode_pids(pid: str, timeout: int = 120) -> list[str]:
+    """
+    Return a clean list of BBC episode PIDs for a brand, series, or episode PID,
+    using get_iplayer's recursive listing feature.
+    """
+    cmd = [
+        "get_iplayer",
+        f"--pid={pid}",
+        "--pid-recursive-list",
+    ]
+
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+    pid_pattern = re.compile(r"\b[a-z][a-z0-9]{7,10}\b")
+
+    pids = []
+    collecting = False
+    for line in result.stdout.splitlines():
+        line = line.strip()
+
+        if not collecting:
+            if line.startswith("Episodes:"):
+                collecting = True
+            continue
+
+        if not line or line.startswith("INFO:"):
+            continue
+
+        match = pid_pattern.search(line)
+        if match:
+            pids.append(match.group(0))
+
+    return pids
+
 def main(argv: Sequence[str] | None = None) -> int:
     _reset_progress_state()
     parser = build_parser()
     args = parser.parse_args(argv)
 
     normalised_pids = [_normalise_pid(pid) for pid in args.pids]
+    expanded_pids = _expand_pids(normalised_pids)
 
-    for pid in normalised_pids:
+    for pid in expanded_pids:
         if pid not in PID_LABELS:
             PID_LABELS[pid] = _build_program_label(pid)
 
-    threads = []
+    max_threads = max(1, args.threads)
+    color_iter = _cycle_colors()
+
     results: Dict[str, int] = {}
     print_lock = threading.Lock()
     results_lock = threading.Lock()
@@ -629,18 +707,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             sys.stdout.flush()
             cursor_hidden = True
 
-        for pid, color in zip(normalised_pids, _cycle_colors()):
-            thread = threading.Thread(
-                target=_run_get_iplayer,
-                name=f"get-iplayer-{pid}",
-                args=(pid, color, results, print_lock, results_lock),
-                daemon=True,
-            )
-            threads.append(thread)
-            thread.start()
-
-        for thread in threads:
-            thread.join()
+        with ThreadPoolExecutor(max_workers=max_threads) as executor:
+            futures = [
+                executor.submit(
+                    _run_get_iplayer,
+                    pid,
+                    next(color_iter),
+                    results,
+                    print_lock,
+                    results_lock,
+                )
+                for pid in expanded_pids
+            ]
+            for future in futures:
+                future.result()
 
         summary_lines = _finalize_bars()
         failures = {pid: code for pid, code in results.items() if code != 0}
