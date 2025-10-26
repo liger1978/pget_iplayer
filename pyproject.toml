@@ -1,0 +1,11 @@
+[project]
+name = "pget-iplayer"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["tqdm>=4.66"]
+
+[project.scripts]
+pget-iplayer = "pget_iplayer.cli:main"
+pget_iplayer = "pget_iplayer.cli:main"
