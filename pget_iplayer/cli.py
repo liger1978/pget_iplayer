@@ -10,6 +10,7 @@ import os
 import re
 import select
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 from typing import Dict, Iterable, Sequence, Tuple
@@ -28,19 +29,25 @@ COMPLETED_LINE = re.compile(
 )
 
 
+RESET = "\033[0m"
+
+
 @dataclass(frozen=True)
 class ColourStyle:
     tqdm_name: str
+    ansi_code: str
 
 
 COLOUR_STYLES: Tuple[ColourStyle, ...] = (
-    ColourStyle("red"),
-    ColourStyle("green"),
-    ColourStyle("yellow"),
-    ColourStyle("blue"),
-    ColourStyle("magenta"),
-    ColourStyle("cyan"),
+    ColourStyle("red", "\033[91m"),
+    ColourStyle("green", "\033[92m"),
+    ColourStyle("yellow", "\033[93m"),
+    ColourStyle("blue", "\033[94m"),
+    ColourStyle("magenta", "\033[95m"),
+    ColourStyle("cyan", "\033[96m"),
 )
+
+STREAM_PRIORITY = ("audio", "audio+video", "video")
 
 PROGRESS_LOCK = threading.Lock()
 PROGRESS_BARS: Dict[tuple[str, str], tqdm] = {}
@@ -139,10 +146,17 @@ def _get_colour(pid: str, default: ColourStyle) -> ColourStyle:
         return PID_COLOUR.setdefault(pid, default)
 
 
+def _stream_sort_key(stream: str) -> tuple[int, int, str]:
+    for index, name in enumerate(STREAM_PRIORITY):
+        if stream.startswith(name):
+            return (0, index, stream)
+    return (1, 0, stream)
+
+
 def _sorted_keys() -> list[tuple[str, str]]:
     return sorted(
         PROGRESS_BARS.keys(),
-        key=lambda item: (item[0], item[1]),
+        key=lambda item: (item[0], _stream_sort_key(item[1])),
     )
 
 
@@ -196,6 +210,45 @@ def _reassign_positions_locked() -> None:
         if bar.pos != position:
             bar.pos = position
             bar.refresh()
+
+
+def _finalize_bars() -> list[str]:
+    with PROGRESS_LOCK:
+        _reassign_positions_locked()
+        keys = _sorted_keys()
+        bars = [PROGRESS_BARS[key] for key in keys]
+        lines: list[str] = []
+        for key, bar in zip(keys, bars):
+            pid, stream = key
+            speed, eta, completed = STREAM_STATE.get(
+                key, (None, None, key in COMPLETED_BARS)
+            )
+            percent = 0.0
+            if bar.total:
+                percent = (bar.n / bar.total) * 100
+            completed = completed or percent >= 100.0
+            percent = min(100.0, max(0.0, percent))
+            bar_blocks = 10
+            filled_blocks = int(round(percent / 100.0 * bar_blocks))
+            filled_blocks = max(0, min(bar_blocks, filled_blocks))
+            bar_segment = "█" * filled_blocks + " " * (bar_blocks - filled_blocks)
+            colour_style = PID_COLOUR.get(pid)
+            bar_segment_coloured = bar_segment
+            if colour_style:
+                bar_segment_coloured = f"{colour_style.ansi_code}{bar_segment}{RESET}"
+            lines.append(
+                f"{_compose_desc(pid, stream, percent, speed, eta, completed)}"
+                f"|{bar_segment_coloured}|"
+            )
+        for bar in bars:
+            bar.leave = False
+        PROGRESS_BARS.clear()
+        PID_COLOUR.clear()
+        COMPLETED_BARS.clear()
+        STREAM_STATE.clear()
+    for bar in bars:
+        bar.close()
+    return lines
 
 
 def _get_progress_bar(pid: str, stream: str, colour: ColourStyle) -> tqdm:
@@ -419,14 +472,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     for thread in threads:
         thread.join()
 
-    with PROGRESS_LOCK:
-        _reassign_positions_locked()
-
+    summary_lines = _finalize_bars()
     failures = {pid: code for pid, code in results.items() if code != 0}
+
+    if summary_lines:
+        sys.stdout.write("\r")
+        sys.stdout.flush()
+    for line in summary_lines:
+        print(line)
+
     if failures:
         for pid, code in failures.items():
-            with print_lock:
-                tqdm.write(f"{pid}: download failed with exit code {code}")
+            tqdm.write(f"{pid}: download failed with exit code {code}")
         return 1
     return 0
 
