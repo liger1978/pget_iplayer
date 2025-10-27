@@ -28,3 +28,7 @@ uv run -- pget_iplayer -t 6 m000xyz1 m000xyz2 m000xyz3
 ```
 
 The command above will start three parallel downloads, each with audio/video progress bars rendered live.
+
+### Building a standalone binary
+
+Run `make build` to produce a standalone `pget_iplayer` binary in `dist/`. The Makefile calls `uvx pyinstaller` with module search paths derived from `.python-version`, so nothing is installed globally. Use `make clean` to remove `build/`, `dist/`, `.pyinstaller/`, and the generated `.spec` file.

@@ -19,3 +19,6 @@ venv.bak/
 .vscode/
 .DS_Store
 Thumbs.db
+build/
+dist/
+.pyinstaller/
