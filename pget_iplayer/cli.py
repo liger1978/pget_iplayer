@@ -6,14 +6,17 @@ import argparse
 import codecs
 import errno
 import itertools
-import time
 import os
 import re
 import requests
+import secrets
 import select
+import shutil
 import subprocess
 import sys
 import threading
+import time
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
@@ -97,6 +100,7 @@ COMPLETED_BARS: set[tuple[str, str]] = set()
 STREAM_STATE: Dict[tuple[str, str], tuple[str | None, str | None, bool]] = {}
 PID_LABELS: Dict[str, str] = {}
 PSEUDO_TIMERS: Dict[tuple[str, str], Dict[str, float]] = {}
+PID_METADATA: Dict[str, Dict[str, str]] = {}
 
 DEFAULT_SPEED = "--.- Mb/s"
 DEFAULT_ETA = "--:--:--"
@@ -107,6 +111,21 @@ PROGRAM_LABEL_WIDTH = 42
 STREAM_FIELD_WIDTH = 12
 PSEUDO_STREAMS = {"waiting", "converting"}
 PERCENT_WIDTH = 8
+VIDEO_EXTENSIONS = {
+    ".mp4",
+    ".m4v",
+    ".mkv",
+    ".mov",
+    ".ts",
+    ".avi",
+    ".flv",
+    ".wmv",
+    ".webm",
+    ".mpg",
+    ".mpeg",
+}
+INVALID_FILENAME_CHARS = re.compile(r"[\\/:*?\"<>|]")
+WHITESPACE_PATTERN = re.compile(r"\s+")
 
 
 def _reset_progress_state() -> None:
@@ -122,7 +141,7 @@ def _reset_progress_state() -> None:
         STREAM_STATE.clear()
         PSEUDO_TIMERS.clear()
         PID_LABELS.clear()
-        PSEUDO_TIMERS.clear()
+        PID_METADATA.clear()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -152,10 +171,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.cpu_count() or 4,
         help="Maximum number of parallel download workers (default: %(default)s)",
     )
+    parser.add_argument(
+        "-p",
+        "--plex",
+        action="store_true",
+        help="Rename completed video files to Plex naming convention.",
+    )
+    parser.add_argument(
+        "-n",
+        "--no-clean",
+        action="store_true",
+        help="Preserve the temporary download subdirectory instead of deleting it.",
+    )
     return parser
 
 
-def _command_for_pid(pid: str) -> Sequence[str]:
+def _command_for_pid(pid: str, subdir_format: str) -> Sequence[str]:
     normalised = _normalise_pid(pid)
     return [
         "get_iplayer",
@@ -165,6 +196,8 @@ def _command_for_pid(pid: str) -> Sequence[str]:
         "--force",
         "--overwrite",
         "--tv-quality=fhd,hd,sd",
+        "--subdir",
+        f"--subdir-format={subdir_format}",
         f"--pid={normalised}",
     ]
 
@@ -173,6 +206,7 @@ def _emit_line(pid: str, colour: ColourStyle, text: str) -> None:
     stripped = text.strip()
     if not stripped:
         return
+
     lower = stripped.lower()
     if "converting" in lower or "tagging" in lower:
         colour = _get_colour(pid, colour)
@@ -237,11 +271,129 @@ def _two_digit(value: str | int | None) -> str:
     return "00"
 
 
+def _sanitize_filename_component(value: str | None) -> str:
+    cleaned = INVALID_FILENAME_CHARS.sub("", (value or "").strip())
+    cleaned = WHITESPACE_PATTERN.sub(" ", cleaned).strip()
+    return cleaned
+
+
+def _format_plex_filename(metadata: Dict[str, str], pid: str, extension: str) -> str:
+    show_name = _sanitize_filename_component(metadata.get("show_title")) or pid.upper()
+    episode_name = _sanitize_filename_component(metadata.get("episode_title")) or pid.upper()
+    season_number = _two_digit(metadata.get("season_number"))
+    episode_number = _two_digit(metadata.get("episode_number"))
+
+    extension = extension if extension.startswith(".") else f".{extension}"
+    extension = extension or ".mp4"
+
+    base = f"{show_name} - s{season_number}e{episode_number} - {episode_name}".strip()
+    if not base:
+        base = pid.upper()
+
+    max_stem_len = max(1, 255 - len(extension))
+    if len(base) > max_stem_len:
+        base = base[:max_stem_len].rstrip()
+
+    return f"{base}{extension}"
+
+
+def _ensure_unique_path(directory: Path, filename: str) -> Path:
+    candidate = directory / filename
+    if not candidate.exists():
+        return candidate
+    stem = candidate.stem
+    suffix = candidate.suffix
+    index = 1
+    while True:
+        new_candidate = directory / f"{stem} ({index}){suffix}"
+        if not new_candidate.exists():
+            return new_candidate
+        index += 1
+
+
+def _locate_download_directory(token: str, pid: str) -> Path | None:
+    expected = Path.cwd() / f".pget_iplayer-{pid}-{token}"
+    if expected.exists():
+        return expected
+    suffix = f"-{pid}-{token}"
+    for candidate in Path.cwd().iterdir():
+        if candidate.is_dir() and candidate.name.startswith(".pget_iplayer-") and candidate.name.endswith(suffix):
+            return candidate
+    return None
+
+
+def _find_downloaded_video(download_dir: Path) -> Path | None:
+    best_candidate: tuple[float, int, Path] | None = None
+    for path in download_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in VIDEO_EXTENSIONS:
+            continue
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            continue
+        candidate_key = (stat.st_mtime, stat.st_size)
+        if best_candidate is None or candidate_key > best_candidate[:2]:
+            best_candidate = (stat.st_mtime, stat.st_size, path)
+    if best_candidate is None:
+        return None
+    return best_candidate[2]
+
+
+def _move_video_to_root(
+    video_path: Path,
+    print_lock: threading.Lock,
+) -> Path | None:
+    destination = _ensure_unique_path(Path.cwd(), video_path.name)
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        video_path.rename(destination)
+    except OSError as exc:
+        with print_lock:
+            tqdm.write(f"{video_path.name}: failed to move video ({exc})")
+        return None
+    return destination
+
+
+def _rename_video_for_plex(
+    pid: str,
+    source_path: Path,
+    print_lock: threading.Lock,
+) -> Path | None:
+    metadata = PID_METADATA.get(pid)
+    if metadata is None:
+        try:
+            metadata = bbc_metadata_from_pid(pid)
+        except Exception:
+            metadata = {}
+        PID_METADATA[pid] = metadata
+
+    target_name = _format_plex_filename(metadata, pid, source_path.suffix)
+    if source_path.name == target_name:
+        return source_path
+
+    destination = _ensure_unique_path(source_path.parent, target_name)
+    try:
+        source_path.rename(destination)
+    except OSError as exc:
+        with print_lock:
+            tqdm.write(
+                f"{pid}: failed to rename {source_path.name} -> {destination.name} ({exc})"
+            )
+        return None
+
+    with print_lock:
+        tqdm.write(f"{pid}: renamed to {destination.name}")
+    return destination
+
+
 def _build_program_label(pid: str) -> str:
     try:
         metadata = bbc_metadata_from_pid(pid)
     except Exception:
         metadata = {}
+    PID_METADATA[pid] = metadata
 
     show = _truncate_title(metadata.get("show_title", ""))
     episode = _truncate_title(metadata.get("episode_title", ""))
@@ -495,135 +647,247 @@ def _update_progress(
 def _run_get_iplayer(
     pid: str,
     colour: ColourStyle,
+    plex_mode: bool,
+    clean_temp: bool,
     results: Dict[str, int],
     print_lock: threading.Lock,
     results_lock: threading.Lock,
 ) -> None:
-    command = _command_for_pid(pid)
-    try:
-        master_fd, slave_fd = os.openpty()
-    except OSError as exc:
-        with print_lock:
-            tqdm.write(f"{pid}: unable to allocate pty ({exc})")
-        with results_lock:
-            results[pid] = 1
-        return
-
-    try:
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=slave_fd,
-            stderr=slave_fd,
-            text=False,
-            bufsize=0,
-            close_fds=True,
-        )
-    except FileNotFoundError:
-        os.close(master_fd)
-        os.close(slave_fd)
-        with print_lock:
-            tqdm.write(f"{pid}: get_iplayer command not found")
-        with results_lock:
-            results[pid] = 127
-        return
-    except OSError as exc:
-        os.close(master_fd)
-        os.close(slave_fd)
-        with print_lock:
-            tqdm.write(f"{pid}: failed to start get_iplayer ({exc})")
-        with results_lock:
-            results[pid] = 1
-        return
-
-    os.close(slave_fd)
-    colour = _get_colour(pid, colour)
-    _start_pseudo_stream(pid, "waiting", colour)
-    decoder = codecs.getincrementaldecoder("utf-8")()
+    token = ""
+    expected_download_dir = Path()
+    while True:
+        token = secrets.token_hex(4)
+        subdir_format = f".pget_iplayer-<pid>-{token}"
+        subdir_name = f".pget_iplayer-{pid}-{token}"
+        expected_download_dir = Path.cwd() / subdir_name
+        if not expected_download_dir.exists():
+            break
+        if clean_temp:
+            try:
+                shutil.rmtree(expected_download_dir)
+            except OSError as exc:
+                with print_lock:
+                    tqdm.write(
+                        f"{pid}: unable to clear previous download directory ({exc})"
+                    )
+                with results_lock:
+                    results[pid] = 1
+                return
+            break
+    command = _command_for_pid(pid, subdir_format)
+    download_dir: Path | None = None
+    moved_video: Path | None = None
+    master_fd: int | None = None
+    slave_fd: int | None = None
+    process: subprocess.Popen | None = None
+    decoder = None
     buffer = ""
     last_partial = ""
-    try:
-        while True:
-            ready, _, _ = select.select([master_fd], [], [], 0.1)
-            if not ready:
-                if process.poll() is not None:
-                    break
-                _tick_pseudo_stream(pid, "waiting", colour)
-                _tick_pseudo_stream(pid, "converting", colour)
+
+    def _cleanup_download_dir() -> None:
+        if not clean_temp:
+            return
+        candidates: list[Path] = []
+        if download_dir:
+            candidates.append(download_dir)
+        candidates.append(expected_download_dir)
+        seen: set[Path] = set()
+        for target in candidates:
+            if not target:
                 continue
             try:
-                raw = os.read(master_fd, 1024)
-            except BlockingIOError:
+                canonical = target.resolve(strict=False)
+            except (OSError, RuntimeError):
+                canonical = target
+            if canonical in seen:
+                continue
+            seen.add(canonical)
+            if not canonical.exists():
+                continue
+            try:
+                shutil.rmtree(canonical)
+            except FileNotFoundError:
                 continue
             except OSError as exc:
-                if exc.errno == errno.EIO:
-                    break
-                raise
-            if not raw:
-                if process.poll() is not None:
-                    break
-                continue
-            text = decoder.decode(raw) if raw else ""
-            if not text:
-                continue
-            buffer += text
-            _tick_pseudo_stream(pid, "waiting", colour)
-            _tick_pseudo_stream(pid, "converting", colour)
-            saw_carriage = False
-            while True:
-                delimiter_index = _next_delimiter(buffer)
-                if delimiter_index is None:
-                    break
-                delimiter_char = buffer[delimiter_index]
-                line = buffer[:delimiter_index]
-                remainder = buffer[delimiter_index + 1 :]
-                if delimiter_char == "\r" and remainder.startswith("\n"):
-                    remainder = remainder[1:]
-                buffer = remainder
-                _emit_line(pid, colour, line)
-                last_partial = ""
-                if delimiter_char == "\r":
-                    saw_carriage = True
-            if saw_carriage and buffer and buffer != last_partial:
-                _emit_line(pid, colour, buffer)
-                last_partial = buffer
-    finally:
-        os.close(master_fd)
+                with print_lock:
+                    tqdm.write(f"{pid}: failed to remove download directory ({exc})")
 
-    buffer += decoder.decode(b"", final=True)
-    while True:
-        delimiter_index = _next_delimiter(buffer)
-        if delimiter_index is None:
-            break
-        delimiter_char = buffer[delimiter_index]
-        line = buffer[:delimiter_index]
-        remainder = buffer[delimiter_index + 1 :]
-        if delimiter_char == "\r" and remainder.startswith("\n"):
-            remainder = remainder[1:]
-        buffer = remainder
-        _emit_line(pid, colour, line)
-        last_partial = ""
-    if buffer:
-        _emit_line(pid, colour, buffer)
+    try:
+        try:
+            master_fd, slave_fd = os.openpty()
+        except OSError as exc:
+            with print_lock:
+                tqdm.write(f"{pid}: unable to allocate pty ({exc})")
+            with results_lock:
+                results[pid] = 1
+            return
 
-    return_code = process.wait()
-    with results_lock:
-        results[pid] = return_code
-    with PROGRESS_LOCK:
-        for key in [item for item in PROGRESS_BARS if item[0] == pid]:
-            bar = PROGRESS_BARS[key]
-            if bar.n < bar.total:
-                bar.n = bar.total
-            COMPLETED_BARS.add(key)
-            STREAM_STATE[key] = (None, None, True)
-            bar.set_description_str(
-                _compose_desc(key[0], key[1], bar.n, None, None, completed=True),
-                refresh=False,
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                text=False,
+                bufsize=0,
+                close_fds=True,
             )
-            bar.refresh()
-        _reassign_positions_locked()
-    _complete_pseudo_stream(pid, "waiting", colour)
-    _complete_pseudo_stream(pid, "converting", colour)
+        except FileNotFoundError:
+            if master_fd is not None:
+                os.close(master_fd)
+                master_fd = None
+            if slave_fd is not None:
+                os.close(slave_fd)
+                slave_fd = None
+            with print_lock:
+                tqdm.write(f"{pid}: get_iplayer command not found")
+            with results_lock:
+                results[pid] = 127
+            return
+        except OSError as exc:
+            if master_fd is not None:
+                os.close(master_fd)
+                master_fd = None
+            if slave_fd is not None:
+                os.close(slave_fd)
+                slave_fd = None
+            with print_lock:
+                tqdm.write(f"{pid}: failed to start get_iplayer ({exc})")
+            with results_lock:
+                results[pid] = 1
+            return
+
+        os.close(slave_fd)
+        slave_fd = None
+
+        colour = _get_colour(pid, colour)
+        _start_pseudo_stream(pid, "waiting", colour)
+        decoder = codecs.getincrementaldecoder("utf-8")()
+        buffer = ""
+        last_partial = ""
+        try:
+            while True:
+                ready, _, _ = select.select([master_fd], [], [], 0.1)
+                if not ready:
+                    if process.poll() is not None:
+                        break
+                    _tick_pseudo_stream(pid, "waiting", colour)
+                    _tick_pseudo_stream(pid, "converting", colour)
+                    continue
+                try:
+                    raw = os.read(master_fd, 1024)
+                except BlockingIOError:
+                    continue
+                except OSError as exc:
+                    if exc.errno == errno.EIO:
+                        break
+                    raise
+                if not raw:
+                    if process.poll() is not None:
+                        break
+                    continue
+                text = decoder.decode(raw) if raw else ""
+                if not text:
+                    continue
+                buffer += text
+                _tick_pseudo_stream(pid, "waiting", colour)
+                _tick_pseudo_stream(pid, "converting", colour)
+                saw_carriage = False
+                while True:
+                    delimiter_index = _next_delimiter(buffer)
+                    if delimiter_index is None:
+                        break
+                    delimiter_char = buffer[delimiter_index]
+                    line = buffer[:delimiter_index]
+                    remainder = buffer[delimiter_index + 1 :]
+                    if delimiter_char == "\r" and remainder.startswith("\n"):
+                        remainder = remainder[1:]
+                    buffer = remainder
+                    _emit_line(pid, colour, line)
+                    last_partial = ""
+                    if delimiter_char == "\r":
+                        saw_carriage = True
+                if saw_carriage and buffer and buffer != last_partial:
+                    _emit_line(pid, colour, buffer)
+                    last_partial = buffer
+        finally:
+            if master_fd is not None:
+                os.close(master_fd)
+                master_fd = None
+
+        if decoder is not None:
+            buffer += decoder.decode(b"", final=True)
+        while True:
+            delimiter_index = _next_delimiter(buffer)
+            if delimiter_index is None:
+                break
+            delimiter_char = buffer[delimiter_index]
+            line = buffer[:delimiter_index]
+            remainder = buffer[delimiter_index + 1 :]
+            if delimiter_char == "\r" and remainder.startswith("\n"):
+                remainder = remainder[1:]
+            buffer = remainder
+            _emit_line(pid, colour, line)
+            last_partial = ""
+        if buffer:
+            _emit_line(pid, colour, buffer)
+
+        return_code = process.wait()
+        with results_lock:
+            results[pid] = return_code
+        with PROGRESS_LOCK:
+            for key in [item for item in PROGRESS_BARS if item[0] == pid]:
+                bar = PROGRESS_BARS[key]
+                if bar.n < bar.total:
+                    bar.n = bar.total
+                COMPLETED_BARS.add(key)
+                STREAM_STATE[key] = (None, None, True)
+                bar.set_description_str(
+                    _compose_desc(key[0], key[1], bar.n, None, None, completed=True),
+                    refresh=False,
+                )
+                bar.refresh()
+            _reassign_positions_locked()
+        _complete_pseudo_stream(pid, "waiting", colour)
+        _complete_pseudo_stream(pid, "converting", colour)
+
+        download_dir = _locate_download_directory(token, pid)
+        if download_dir and download_dir.exists():
+            if return_code == 0:
+                video_path = _find_downloaded_video(download_dir)
+                if video_path is None:
+                    with print_lock:
+                        tqdm.write(f"{pid}: no video file found in download directory")
+                    with results_lock:
+                        results[pid] = 1
+                else:
+                    moved_video = _move_video_to_root(video_path, print_lock)
+                    if moved_video is None:
+                        with results_lock:
+                            results[pid] = 1
+        elif return_code == 0:
+            with print_lock:
+                tqdm.write(f"{pid}: download directory not found")
+            with results_lock:
+                results[pid] = 1
+
+        if plex_mode and return_code == 0 and moved_video:
+            renamed = _rename_video_for_plex(pid, moved_video, print_lock)
+            if renamed is None:
+                with results_lock:
+                    results[pid] = 1
+    finally:
+        if slave_fd is not None:
+            try:
+                os.close(slave_fd)
+            except OSError:
+                pass
+        if master_fd is not None:
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
+        _cleanup_download_dir()
 
 
 def _cycle_colors() -> Iterable[ColourStyle]:
@@ -785,27 +1049,54 @@ def main(argv: Sequence[str] | None = None) -> int:
     print_lock = threading.Lock()
     results_lock = threading.Lock()
     cursor_hidden = False
+    interrupted = False
+    executor: ThreadPoolExecutor | None = None
+    shutdown_called = False
+    summary_lines: list[str] = []
+    failures: Dict[str, int] = {}
+    clean_temp = not args.no_clean
     try:
         if sys.stdout.isatty():
             sys.stdout.write("\033[?25l")
             sys.stdout.flush()
             cursor_hidden = True
 
-        with ThreadPoolExecutor(max_workers=max_threads) as executor:
-            futures = [
-                executor.submit(
-                    _run_get_iplayer,
-                    pid,
-                    next(color_iter),
-                    results,
-                    print_lock,
-                    results_lock,
-                )
-                for pid in expanded_pids
-            ]
+        executor = ThreadPoolExecutor(max_workers=max_threads)
+        futures = [
+            executor.submit(
+                _run_get_iplayer,
+                pid,
+                next(color_iter),
+                args.plex,
+                clean_temp,
+                results,
+                print_lock,
+                results_lock,
+            )
+            for pid in expanded_pids
+        ]
+
+        try:
             for future in futures:
                 future.result()
-
+        except KeyboardInterrupt:
+            interrupted = True
+            for future in futures:
+                future.cancel()
+            executor.shutdown(wait=True, cancel_futures=True)
+            shutdown_called = True
+        else:
+            executor.shutdown(wait=True)
+            shutdown_called = True
+    except KeyboardInterrupt:
+        interrupted = True
+        if executor and not shutdown_called:
+            executor.shutdown(wait=True, cancel_futures=True)
+            shutdown_called = True
+    finally:
+        if executor and not shutdown_called:
+            executor.shutdown(wait=True, cancel_futures=True)
+            shutdown_called = True
         summary_lines = _finalize_bars()
         failures = {pid: code for pid, code in results.items() if code != 0}
 
@@ -815,15 +1106,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         for line in summary_lines:
             print(line)
 
-        if failures:
-            for pid, code in failures.items():
-                tqdm.write(f"{pid}: download failed with exit code {code}")
-            return 1
-        return 0
-    finally:
         if cursor_hidden and sys.stdout.isatty():
             sys.stdout.write("\033[?25h")
             sys.stdout.flush()
+
+    if failures and not interrupted:
+        for pid, code in failures.items():
+            tqdm.write(f"{pid}: download failed with exit code {code}")
+        return 1
+    if interrupted:
+        tqdm.write("Downloads interrupted by user")
+        return 130
+    return 0
 
 
 if __name__ == "__main__":
