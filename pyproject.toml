@@ -10,5 +10,4 @@ dependencies = [
 ]
 
 [project.scripts]
-pget-iplayer = "pget_iplayer.cli:main"
 pget_iplayer = "pget_iplayer.cli:main"
