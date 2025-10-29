@@ -151,12 +151,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Parallel wrapper around get_iplayer for downloading multiple pids concurrently."
         ),
-    )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"%(prog)s {__version__}",
-        help="Display the installed version and exit.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "pids",
@@ -165,23 +160,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="One or more BBC programme, series (season) or brand (show) PIDs or URLs to download.",
     )
     parser.add_argument(
-        "-t",
-        "--threads",
-        type=int,
-        default=os.cpu_count() or 4,
-        help="Maximum number of parallel download workers (default: %(default)s)",
+        "-n",
+        "--no-clean",
+        action="store_true",
+        help="Preserve the temporary download subdirectory instead of deleting it",
     )
     parser.add_argument(
         "-p",
         "--plex",
         action="store_true",
-        help="Rename completed video files to Plex naming convention.",
+        help="Rename completed video files to Plex naming convention",
     )
     parser.add_argument(
-        "-n",
-        "--no-clean",
-        action="store_true",
-        help="Preserve the temporary download subdirectory instead of deleting it.",
+        "-t",
+        "--threads",
+        type=int,
+        default=os.cpu_count() or 4,
+        help="Maximum number of parallel download workers",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+        help="Display the installed version and exit.",
     )
     return parser
 

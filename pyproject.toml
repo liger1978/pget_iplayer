@@ -11,3 +11,8 @@ dependencies = [
 
 [project.scripts]
 pget_iplayer = "pget_iplayer.cli:main"
+
+[dependency-groups]
+dev = [
+    "nuitka>=2.8.4",
+]
