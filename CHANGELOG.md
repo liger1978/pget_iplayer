@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0](https://github.com/liger1978/pget_iplayer/compare/v0.1.0...v0.2.0) (2025-10-30)
+
+
+### Features
+
+* Release binaries ([d756f8a](https://github.com/liger1978/pget_iplayer/commit/d756f8add7a0d47a1eba72ec231acc9b97665a85))
+* Release binaries ([3216268](https://github.com/liger1978/pget_iplayer/commit/32162681ad4ab31d3f927cfe2a98875426768531))
+
 ## 0.1.0 (2025-10-30)
 
 
