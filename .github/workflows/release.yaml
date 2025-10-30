@@ -14,15 +14,33 @@ jobs:
   release:
     runs-on: ubuntu-22.04
     steps:
+      - id: release
+        uses: googleapis/release-please-action@v4
+        with: {release-type: 'python'}
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+
+  upload:
+    needs: release
+    if: ${{ needs.release.outputs.release_created }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-22.04, ubuntu-22.04-arm, macos-15-intel, macos-latest]
+        include:
+          - {runner: ubuntu-22.04,     os: linux,   arch: amd64, ext: ''}
+          - {runner: ubuntu-22.04-arm, os: linux,   arch: arm64, ext: ''}  
+          - {runner: macos-15-intel,   os: macos,   arch: amd64, ext: ''}
+          - {runner: macos-latest,     os: macos,   arch: arm64, ext: ''}
+    runs-on: ${{ matrix.runner }}
+    steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with: {python-version: '3.12'}
       - uses: astral-sh/setup-uv@v7
-      - run: make build
-      - id: release
-        uses: googleapis/release-please-action@v4
-        with: {release-type: 'python'}
-      - if: ${{ steps.release.outputs.release_created }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload ${{ steps.release.outputs.tag_name }} ./build/pget_iplayer
+      - run: |
+          make build
+          mv build/pget_iplayer${{ matrix.ext }} build/pget_iplayer_${{ matrix.os }}_${{ matrix.arch }}${{ matrix.ext }}
+          gh release upload ${{ needs.release.outputs.tag_name }} ./build/pget_iplayer
+        env: {GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'}
