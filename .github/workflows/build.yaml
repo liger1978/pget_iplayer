@@ -22,6 +22,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
       - run: |
           make build
+          chmod +x build/pget_iplayer${{ matrix.ext }}
           mv build/pget_iplayer${{ matrix.ext }} build/pget_iplayer_${{ matrix.os }}_${{ matrix.arch }}${{ matrix.ext }}
       - uses: actions/upload-artifact@v5
         with:
