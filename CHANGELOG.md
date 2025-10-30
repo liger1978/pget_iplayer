@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/liger1978/pget_iplayer/compare/v0.2.0...v0.2.1) (2025-10-30)
+
+
+### Bug Fixes
+
+* fix binary upload ([e820bab](https://github.com/liger1978/pget_iplayer/commit/e820babaacef2fcf1c74384e8ee3c4d03f8b631a))
+* fix binary upload ([96fe535](https://github.com/liger1978/pget_iplayer/commit/96fe53537d985cb00d76d675d7f31861ad833bec))
+
 ## [0.2.0](https://github.com/liger1978/pget_iplayer/compare/v0.1.0...v0.2.0) (2025-10-30)
 
 
