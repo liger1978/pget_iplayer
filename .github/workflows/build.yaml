@@ -14,7 +14,10 @@ jobs:
         with: {python-version: '3.12'}
       - uses: astral-sh/setup-uv@v7
       - run: make build
-      - uses: actions/upload-artifact@v4
-        with:
-          path: build/pget_iplayer
-          name: pget_iplayer
+      - id: release
+        uses: googleapis/release-please-action@v4
+        with: {release-type: 'python'}
+      - if: ${{ steps.release.outputs.release_created }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload ${{ steps.release.outputs.tag_name }} ./build/pget_iplayer
