@@ -10,10 +10,10 @@ jobs:
       matrix:
         runner: [ubuntu-22.04, ubuntu-22.04-arm, macos-15-intel, macos-latest]
         include:
-          - { runner: ubuntu-22.04,     os: linux,   arch: amd64, ext: ''}
-          - { runner: ubuntu-22.04-arm, os: linux,   arch: arm64, ext: ''}  
-          - { runner: macos-15-intel,   os: macos,   arch: amd64, ext: ''}
-          - { runner: macos-latest,     os: macos,   arch: arm64, ext: ''}
+          - { runner: ubuntu-22.04,     os: linux, arch: amd64 }
+          - { runner: ubuntu-22.04-arm, os: linux, arch: arm64 }  
+          - { runner: macos-15-intel,   os: macos, arch: amd64 }
+          - { runner: macos-latest,     os: macos, arch: arm64 }
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v5
@@ -22,9 +22,10 @@ jobs:
       - uses: astral-sh/setup-uv@v7
       - run: |
           make build
-          chmod +x build/pget_iplayer${{ matrix.ext }}
-          mv build/pget_iplayer${{ matrix.ext }} build/pget_iplayer_${{ matrix.os }}_${{ matrix.arch }}${{ matrix.ext }}
+          chmod +x build/pget_iplayer
+          mv build/pget_iplayer build/pget_iplayer_${{ matrix.os }}_${{ matrix.arch }}
+          tar -czf build/pget_iplayer_${{ matrix.os }}_${{ matrix.arch }}.tar.gz -C build pget_iplayer_${{ matrix.os }}_${{ matrix.arch }}
       - uses: actions/upload-artifact@v5
         with:
-          name: pget_iplayer_${{ matrix.os }}_${{ matrix.arch }}${{ matrix.ext }}
-          path: ./build/pget_iplayer_${{ matrix.os }}_${{ matrix.arch }}${{ matrix.ext }}
+          name: pget_iplayer_${{ matrix.os }}_${{ matrix.arch }}.tar.gz
+          path: build/pget_iplayer_${{ matrix.os }}_${{ matrix.arch }}.tar.gz
