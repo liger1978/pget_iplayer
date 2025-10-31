@@ -1,6 +1,7 @@
-name: Release
+name: Build and release
 
 on:
+  pull_request:
   push:
     branches:
       - master
@@ -15,15 +16,16 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - id: release
+        if: github.event_name == 'push'
         uses: googleapis/release-please-action@v4
         with: {release-type: 'python'}
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
 
-  upload:
+  build-and-upload:
     needs: release
-    if: ${{ needs.release.outputs.release_created }}
+    if: ${{ github.event_name == 'pull_request' || needs.release.outputs.release_created }}
     strategy:
       fail-fast: false
       matrix:
@@ -44,5 +46,12 @@ jobs:
           chmod +x build/pget_iplayer
           mv build/pget_iplayer build/pget_iplayer_${{ matrix.os }}_${{ matrix.arch }}
           tar -czf build/pget_iplayer_${{ matrix.os }}_${{ matrix.arch }}.tar.gz -C build pget_iplayer_${{ matrix.os }}_${{ matrix.arch }}
+      - if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v5
+        with:
+          name: pget_iplayer_${{ matrix.os }}_${{ matrix.arch }}.tar.gz
+          path: build/pget_iplayer_${{ matrix.os }}_${{ matrix.arch }}.tar.gz
+      - if: github.event_name == 'push' && needs.release.outputs.release_created
+        run: |
           gh release upload ${{ needs.release.outputs.tag_name }} build/pget_iplayer_${{ matrix.os }}_${{ matrix.arch }}.tar.gz
         env: {GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'}
