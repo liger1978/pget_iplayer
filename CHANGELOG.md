@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/liger1978/pget_iplayer/compare/v0.3.0...v0.4.0) (2025-10-31)
+
+
+### Features
+
+* Improve build and release ([a254d3c](https://github.com/liger1978/pget_iplayer/commit/a254d3c41887215f74328f9e7a6a16a7c947fd55))
+* Improve build and release ([3318dc7](https://github.com/liger1978/pget_iplayer/commit/3318dc72a74554ac091e362801942933666e4bef))
+
 ## [0.3.0](https://github.com/liger1978/pget_iplayer/compare/v0.2.1...v0.3.0) (2025-10-31)
 
 
