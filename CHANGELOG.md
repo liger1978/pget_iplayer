@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/liger1978/pget_iplayer/compare/v0.2.1...v0.3.0) (2025-10-31)
+
+
+### Features
+
+* Add tarball releases ([535b0be](https://github.com/liger1978/pget_iplayer/commit/535b0be97548d192b44508b8624e0dcf9ef59656))
+* Add tarball releases ([4508077](https://github.com/liger1978/pget_iplayer/commit/45080779c7c0c4a744098966a19ab10dfd4d944f))
+
 ## [0.2.1](https://github.com/liger1978/pget_iplayer/compare/v0.2.0...v0.2.1) (2025-10-30)
 
 
