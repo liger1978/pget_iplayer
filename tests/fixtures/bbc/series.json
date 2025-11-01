@@ -1,0 +1,18 @@
+{
+  "programme": {
+    "type": "series",
+    "pid": "b04vs4r9",
+    "title": "Series 1",
+    "display_title": {
+      "title": "Series 1",
+      "subtitle": ""
+    },
+    "parent": {
+      "programme": {
+        "type": "brand",
+        "pid": "b07xdmgk",
+        "title": "Mr Giant Pig Trousers"
+      }
+    }
+  }
+}

@@ -17,7 +17,13 @@ NUITKA_FLAGS := --assume-yes-for-downloads --remove-output --onefile \
 	--python-flag=-m --output-dir=$(OUTPUT_DIR) \
 	--output-filename=$(OUTPUT_FILE) $(NUITKA_STATIC_LIBPYTHON) $(APP_NAME)
 
-.PHONY: build clean distclean docker-image docker-build
+.PHONY: clean distclean build docker-image docker-build install-git-hooks lint lint-all test check check-all
+
+clean:
+	rm -rf $(OUTPUT_DIR) || true
+
+distclean: clean
+	find . -name '__pycache__' -type d -prune -exec rm -rf {} + || true
 
 build:
 	$(UV) sync --group build
@@ -35,16 +41,18 @@ install-git-hooks:
 	$(UV) sync --group check
 	$(UV) run pre-commit install
 
-check:
+lint:
 	$(UV) sync --group check
 	$(UV) run pre-commit run
 
-check-all:
+lint-all:
 	$(UV) sync --group check
 	$(UV) run pre-commit run --all-files
 
-clean:
-	rm -rf $(OUTPUT_DIR) || true
+test:
+	$(UV) sync --group check
+	$(UV) run pytest -vv
 
-distclean: clean
-	find . -name '__pycache__' -type d -prune -exec rm -rf {} + || true
+check: lint test
+
+check-all: lint-all test

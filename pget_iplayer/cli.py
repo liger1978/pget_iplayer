@@ -31,6 +31,9 @@ from . import __version__
 
 PID_PATTERN = re.compile(r"([a-z][b-df-hj-np-tv-z0-9]{7,10})", re.IGNORECASE)
 
+BBC_IPLAYER_SINGLE_EPISODE_PREFIX = "https://www.bbc.co.uk/iplayer/episode/"
+BBC_IPLAYER_SERIES_BRAND_PREFIX = "https://www.bbc.co.uk/iplayer/episodes/"
+
 
 PROGRESS_LINE = re.compile(
     r"^\s*(?P<percent>\d+(?:\.\d+)?)%.*?@\s*(?P<speed>.*?)\s+ETA:\s*(?P<eta>\S+).*?\[(?P<stream>[^\]]+)\]\s*$",
@@ -260,12 +263,58 @@ def _get_colour(pid: str, default: ColourStyle) -> ColourStyle:
 
 
 def _normalise_pid(value: str) -> str:
-    matches = PID_PATTERN.findall(value)
+    trimmed = (value or "").strip()
+    if not trimmed:
+        return ""
+
+    lowered = trimmed.lower()
+
+    if lowered.startswith(BBC_IPLAYER_SINGLE_EPISODE_PREFIX):
+        candidate = trimmed[len(BBC_IPLAYER_SINGLE_EPISODE_PREFIX) :]
+        candidate = candidate.split("/", 1)[0]
+        candidate = candidate.split("?", 1)[0]
+        candidate = candidate.split("#", 1)[0]
+        candidate = candidate.strip()
+        _debug_log(
+            f"Normalising PID from single episode URL '{trimmed}'; extracted candidate '{candidate or '<empty>'}'"
+        )
+        if candidate and PID_PATTERN.fullmatch(candidate):
+            result = candidate.lower()
+            _debug_log(f"Using PID '{result}' from single episode URL")
+            return result
+        _debug_log(
+            "No valid PID immediately after single episode URL prefix; falling back to generic parsing"
+        )
+
+    matches = PID_PATTERN.findall(trimmed)
     if matches:
+        if lowered.startswith(BBC_IPLAYER_SERIES_BRAND_PREFIX):
+            _debug_log(f"Normalising PID from series/brand URL '{trimmed}'; candidates={matches}")
+            for candidate in reversed(matches):
+                if any(ch.isdigit() for ch in candidate):
+                    result = candidate.lower()
+                    _debug_log(f"Using PID '{result}' from series/brand URL")
+                    return result
+            result = matches[-1].lower()
+            _debug_log(
+                f"No candidate with digits in series/brand URL; defaulting to last PID '{result}'"
+            )
+            return result
+
         for candidate in reversed(matches):
             if any(ch.isdigit() for ch in candidate):
-                return candidate.lower()
-    return value.strip().lower()
+                result = candidate.lower()
+                _debug_log(f"Using PID '{result}' from matches {matches}")
+                return result
+        result = matches[-1].lower()
+        _debug_log(
+            f"No candidate with digits found; defaulting to last PID '{result}' from matches {matches}"
+        )
+        return result
+
+    result = trimmed.lower()
+    _debug_log(f"No PID match found; returning stripped value '{result}'")
+    return result
 
 
 @lru_cache(maxsize=1)
@@ -1122,7 +1171,175 @@ def bbc_metadata_from_pid(pid: str, timeout: int = 10) -> Dict[str, str]:
     }
 
 
+def _dedupe_preserve_order(items: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
+def _fetch_programme_json(pid: str, timeout: int) -> dict:
+    url = f"https://www.bbc.co.uk/programmes/{pid}.json"
+    _debug_log(f"{pid}: fetching programme JSON via {url}")
+    response = requests.get(url, timeout=timeout)
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError("programme payload is not an object")
+    return payload
+
+
+def _fetch_children_programmes(pid: str, timeout: int) -> list[dict]:
+    programmes: list[dict] = []
+    page = 1
+    base_url = f"https://www.bbc.co.uk/programmes/{pid}/children.json"
+    while True:
+        url = f"{base_url}?page={page}"
+        _debug_log(f"{pid}: fetching children page {page} via {url}")
+        response = requests.get(url, timeout=timeout)
+        if response.status_code == 404:
+            _debug_log(f"{pid}: children page {page} returned 404; stopping pagination")
+            break
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("children payload is not an object")
+        children = payload.get("children")
+        if not isinstance(children, dict):
+            _debug_log(f"{pid}: children page {page} missing 'children' key")
+            break
+        page_programmes = [
+            item for item in (children.get("programmes") or []) if isinstance(item, dict)
+        ]
+        _debug_log(f"{pid}: children page {page} returned {len(page_programmes)} programmes")
+        programmes.extend(page_programmes)
+        total = children.get("total")
+        total_int: int | None
+        try:
+            total_int = int(total) if total is not None else None
+        except (TypeError, ValueError):
+            total_int = None
+        if total_int is not None and len(programmes) >= total_int:
+            _debug_log(f"{pid}: collected {len(programmes)} programmes across children pages")
+            break
+        if not page_programmes:
+            _debug_log(f"{pid}: no programmes found on children page {page}; stopping")
+            break
+        page += 1
+        if page > 1000:
+            _debug_log(f"{pid}: reached pagination safety limit while fetching children")
+            break
+    return programmes
+
+
+def _episode_pids_from_programmes(programmes: Iterable[dict]) -> list[str]:
+    episode_pids: list[str] = []
+    for item in programmes:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") != "episode":
+            continue
+        candidate = item.get("pid")
+        if isinstance(candidate, str) and PID_PATTERN.fullmatch(candidate):
+            episode_pids.append(candidate.lower())
+    return episode_pids
+
+
+def _series_pids_from_programmes(programmes: Iterable[dict]) -> list[str]:
+    series_pids: list[str] = []
+    for item in programmes:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") != "series":
+            continue
+        candidate = item.get("pid")
+        if isinstance(candidate, str) and PID_PATTERN.fullmatch(candidate):
+            series_pids.append(candidate.lower())
+    return _dedupe_preserve_order(series_pids)
+
+
+def _api_expand_series(pid: str, timeout: int) -> list[str]:
+    programmes = _fetch_children_programmes(pid, timeout)
+    episode_pids = _episode_pids_from_programmes(programmes)
+    _debug_log(f"{pid}: API series expansion found {len(episode_pids)} episode(s)")
+    return _dedupe_preserve_order(episode_pids)
+
+
+def _api_expand_brand(pid: str, timeout: int) -> list[str]:
+    programmes = _fetch_children_programmes(pid, timeout)
+    episode_pids = _episode_pids_from_programmes(programmes)
+    series_pids = _series_pids_from_programmes(programmes)
+    _debug_log(
+        f"{pid}: API brand expansion has {len(series_pids)} series child(ren) and {len(episode_pids)} direct episode(s)"
+    )
+    for series_pid in series_pids:
+        series_episodes = _api_expand_series(series_pid, timeout)
+        _debug_log(
+            f"{pid}: series {series_pid} contributed {len(series_episodes)} episode(s) via API"
+        )
+        episode_pids.extend(series_episodes)
+    return _dedupe_preserve_order(episode_pids)
+
+
 def get_bbc_episode_pids(pid: str, timeout: int = 120) -> list[str]:
+    pid = _normalise_pid(pid)
+    try:
+        programme_payload = _fetch_programme_json(pid, timeout)
+    except requests.RequestException as exc:
+        _debug_log(f"{pid}: failed to fetch programme metadata via API ({exc})")
+    except ValueError as exc:
+        _debug_log(f"{pid}: invalid programme payload via API ({exc})")
+    else:
+        programme = programme_payload.get("programme")
+        if isinstance(programme, dict):
+            programme_type = programme.get("type")
+            _debug_log(f"{pid}: programme.type from API is '{programme_type}'")
+            if programme_type == "episode":
+                _debug_log(f"{pid}: programme is an episode; returning PID directly")
+                return [pid]
+            if programme_type == "series":
+                try:
+                    series_pids = _api_expand_series(pid, timeout)
+                except requests.RequestException as exc:
+                    _debug_log(f"{pid}: failed to expand series via API ({exc})")
+                except ValueError as exc:
+                    _debug_log(f"{pid}: invalid series children payload via API ({exc})")
+                else:
+                    if series_pids:
+                        _debug_log(
+                            f"{pid}: API series expansion succeeded with {len(series_pids)} PID(s)"
+                        )
+                        return series_pids
+                    _debug_log(f"{pid}: API series expansion returned no PIDs")
+            elif programme_type == "brand":
+                try:
+                    brand_pids = _api_expand_brand(pid, timeout)
+                except requests.RequestException as exc:
+                    _debug_log(f"{pid}: failed to expand brand via API ({exc})")
+                except ValueError as exc:
+                    _debug_log(f"{pid}: invalid brand children payload via API ({exc})")
+                else:
+                    if brand_pids:
+                        _debug_log(
+                            f"{pid}: API brand expansion succeeded with {len(brand_pids)} PID(s)"
+                        )
+                        return brand_pids
+                    _debug_log(f"{pid}: API brand expansion returned no PIDs")
+            else:
+                _debug_log(
+                    f"{pid}: unsupported programme type '{programme_type}' received from API"
+                )
+        else:
+            _debug_log(f"{pid}: API payload missing 'programme' object")
+
+    _debug_log(f"{pid}: falling back to get_iplayer PID expansion")
+    return _get_bbc_episode_pids_via_get_iplayer(pid, timeout)
+
+
+def _get_bbc_episode_pids_via_get_iplayer(pid: str, timeout: int = 120) -> list[str]:
     """
     Return a clean list of BBC episode PIDs for a brand, series, or episode PID,
     using get_iplayer's recursive listing feature.

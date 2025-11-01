@@ -1,0 +1,20 @@
+{
+  "children": {
+    "page": 1,
+    "total": 3,
+    "limit": 2,
+    "offset": 0,
+    "programmes": [
+      {
+        "type": "episode",
+        "pid": "b06nxnl4",
+        "title": "The Story Badge"
+      },
+      {
+        "type": "episode",
+        "pid": "b06mty6m",
+        "title": "The Teddy Bear Badge"
+      }
+    ]
+  }
+}
