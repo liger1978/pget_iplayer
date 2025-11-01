@@ -2,15 +2,13 @@
 
 from importlib import metadata
 
-
-def __getattr__(name: str) -> str:
-    if name == "__version__":
-        try:
-            return metadata.version("pget-iplayer")
-        except metadata.PackageNotFoundError:
-            # Fallback during local development when the package is not installed.
-            return "0.0.0"
-    raise AttributeError(name)
-
+try:
+    from .version import __version__
+except ImportError:
+    try:
+        __version__ = metadata.version("pget-iplayer")
+    except metadata.PackageNotFoundError:
+        # Fallback during local development when the package is not installed.
+        __version__ = "0.0.0"
 
 __all__ = ["__version__"]
