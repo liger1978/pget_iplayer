@@ -1,0 +1,20 @@
+{
+  "children": {
+    "page": 1,
+    "total": 2,
+    "limit": 50,
+    "offset": 0,
+    "programmes": [
+      {
+        "type": "series",
+        "pid": "b04vs4r9",
+        "title": "Series 1"
+      },
+      {
+        "type": "episode",
+        "pid": "b06nxnl4",
+        "title": "The Story Badge"
+      }
+    ]
+  }
+}
