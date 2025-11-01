@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.0](https://github.com/liger1978/pget_iplayer/compare/v0.6.1...v1.0.0) (2025-11-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* Rename to auntie ([#31](https://github.com/liger1978/pget_iplayer/issues/31))
+
+### Features
+
+* Rename to auntie ([#31](https://github.com/liger1978/pget_iplayer/issues/31)) ([0210bec](https://github.com/liger1978/pget_iplayer/commit/0210bec390dcefda18bb0dd1b75896e32a4bfb18))
+
 ## [0.6.1](https://github.com/liger1978/auntie/compare/v0.6.0...v0.6.1) (2025-11-01)
 
 
