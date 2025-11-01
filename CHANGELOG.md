@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0](https://github.com/liger1978/pget_iplayer/compare/v0.4.0...v0.5.0) (2025-11-01)
+
+
+### Features
+
+* Support Microsoft Windows ([e2a0d9e](https://github.com/liger1978/pget_iplayer/commit/e2a0d9ed73fb3bab2f4b44e3ba2362ca5e461d1d))
+* Support Microsoft Windows ([77a65a2](https://github.com/liger1978/pget_iplayer/commit/77a65a2bfcff5cae8f838e9e6e97b7251c67ed54))
+
 ## [0.4.0](https://github.com/liger1978/pget_iplayer/compare/v0.3.0...v0.4.0) (2025-10-31)
 
 
