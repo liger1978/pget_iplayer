@@ -11,16 +11,19 @@ import re
 import requests
 import secrets
 import select
+import shlex
 import shutil
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+from queue import Empty, Queue
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Iterable, Optional, Sequence, Tuple
+from functools import lru_cache
+from typing import BinaryIO, Dict, Iterable, Optional, Sequence, Tuple
 
 from tqdm import tqdm
 
@@ -41,55 +44,53 @@ COMPLETED_LINE = re.compile(
 
 RESET = "\033[0m"
 
+DEBUG_ENABLED = False
+
+
+def _debug_log(message: str) -> None:
+    if not DEBUG_ENABLED:
+        return
+    try:
+        tqdm.write(f"[debug] {message}")
+    except Exception:
+        pass
+
+
+def _format_command(command: Sequence[str]) -> str:
+    return " ".join(shlex.quote(part) for part in command)
+
 
 @dataclass(frozen=True)
 class ColourStyle:
     tqdm_name: str
     ansi_code: str
 
-
-# COLOUR_STYLES: Tuple[ColourStyle, ...] = (
-#     ColourStyle("#5f6f52", "\033[38;2;95;111;82m"),
-#     ColourStyle("#4c566a", "\033[38;2;76;86;106m"),
-#     ColourStyle("#6b8a89", "\033[38;2;107;138;137m"),
-#     ColourStyle("#836f7c", "\033[38;2;131;111;124m"),
-#     ColourStyle("#998f7a", "\033[38;2;153;143;122m"),
-#     ColourStyle("#b08e7d", "\033[38;2;176;142;125m"),
-#     ColourStyle("#7b8b8e", "\033[38;2;123;139;142m"),
-#     ColourStyle("#597081", "\033[38;2;89;112;129m"),
-#     ColourStyle("#8c7267", "\033[38;2;140;114;103m"),
-#     ColourStyle("#a38f85", "\033[38;2;163;143;133m"),
-#     ColourStyle("#5c5f70", "\033[38;2;92;95;112m"),
-#     ColourStyle("#708070", "\033[38;2;112;128;112m"),
-# )
-
 COLOUR_STYLES: Tuple[ColourStyle, ...] = (
-    # 1. Deep charcoal – for primary text on light background or background on dark console
-    ColourStyle("#2e2e2e", "\033[38;2;46;46;46m"),
-    # 2. Warm mid-neutral – for secondary text
-    ColourStyle("#606060", "\033[38;2;96;96;96m"),
-    # 3. Soft off-white / chalk – for backgrounds or highlighting text on dark
-    ColourStyle("#f5f5f5", "\033[38;2;245;245;245m"),
-    # 4. Muted emerald – for active/highlight state
+    # Muted emerald – for active/highlight state
     ColourStyle("#1a4d41", "\033[38;2;26;77;65m"),
-    # 5. Dusty teal – alternative accent
-    ColourStyle("#4e7f7b", "\033[38;2;78;127;123m"),
-    # 6. Cognac amber – for warnings or emphasis
-    ColourStyle("#b37537", "\033[38;2;179;117;55m"),
-    # 7. Slate blue – for links / info text
-    ColourStyle("#475d7b", "\033[38;2;71;93;123m"),
-    # 8. Muted burgundy – for errors or critical/high state
-    ColourStyle("#7a2f3b", "\033[38;2;122;47;59m"),
-    # 9. Warm taupe – for subtle backgrounds or blocks
-    ColourStyle("#8f8173", "\033[38;2;143;129;115m"),
-    #10. Soft olive – for success/ok state
+    # Soft olive – for success/ok state
     ColourStyle("#657253", "\033[38;2;101;114;83m"),
-    #11. Cool slate-grey blue – for disabled/less important
+    # Dusty teal – alternative accent
+    ColourStyle("#4e7f7b", "\033[38;2;78;127;123m"),
+    # Cool slate-grey blue
     ColourStyle("#5a6b7d", "\033[38;2;90;107;125m"),
-    #12. Pale champagne – for light accent or highlighting selection
+    # Slate blue
+    ColourStyle("#475d7b", "\033[38;2;71;93;123m"),
+    # Soft off-white / chalk – for backgrounds or highlighting text on dark
+    ColourStyle("#f5f5f5", "\033[38;2;245;245;245m"),
+    # Pale champagne – for light accent or highlighting selection
     ColourStyle("#e8ddcf", "\033[38;2;232;221;207m"),
+    # Warm mid-neutral – for secondary text
+    ColourStyle("#606060", "\033[38;2;96;96;96m"),
+    # Deep charcoal – for primary text on light background or background on dark console
+    ColourStyle("#2e2e2e", "\033[38;2;46;46;46m"),
+    # Warm taupe – for subtle backgrounds or blocks
+    ColourStyle("#8f8173", "\033[38;2;143;129;115m"),
+    # Cognac amber – for warnings or emphasis
+    ColourStyle("#b37537", "\033[38;2;179;117;55m"),
+    # Muted burgundy – for errors or critical/high state
+    ColourStyle("#7a2f3b", "\033[38;2;122;47;59m")
 )
-
 
 STREAM_PRIORITY = ("waiting", "audio", "audio+video", "video", "converting")
 
@@ -160,6 +161,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="One or more BBC programme, series (season) or brand (show) PIDs or URLs to download.",
     )
     parser.add_argument(
+        "-d",
+        "--debug",
+        action="store_true",
+        help="Enable verbose debug logging of get_iplayer interactions",
+    )
+    parser.add_argument(
         "-n",
         "--no-clean",
         action="store_true",
@@ -187,18 +194,20 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _command_for_pid(pid: str, subdir_format: str) -> Sequence[str]:
+def _command_for_pid(pid: str, output_dir: Path) -> Sequence[str]:
     normalised = _normalise_pid(pid)
+    base_command = list(_get_iplayer_invocation())
     return [
-        "get_iplayer",
+        *base_command,
         "--get",
         "--subtitles",
         "--subs-embed",
         "--force",
         "--overwrite",
         "--tv-quality=fhd,hd,sd",
-        "--subdir",
-        f"--subdir-format={subdir_format}",
+        "--log-progress",
+        "--output",
+        str(output_dir),
         f"--pid={normalised}",
     ]
 
@@ -213,8 +222,11 @@ def _emit_line(pid: str, colour: ColourStyle, text: str) -> None:
         colour = _get_colour(pid, colour)
         _start_pseudo_stream(pid, "converting", colour)
     match = PROGRESS_LINE.match(stripped)
+    complete_match = None
     if not match:
         complete_match = COMPLETED_LINE.search(stripped)
+        if DEBUG_ENABLED and complete_match is None:
+            _debug_log(f"{pid}: output: {stripped}")
         if not complete_match:
             return
         percent = 100.0
@@ -253,6 +265,53 @@ def _normalise_pid(value: str) -> str:
             if any(ch.isdigit() for ch in candidate):
                 return candidate.lower()
     return value.strip().lower()
+
+
+@lru_cache(maxsize=1)
+def _resolve_get_iplayer_entrypoint() -> str:
+    override = os.environ.get("PGET_IPLAYER_COMMAND")
+    if override:
+        _debug_log(f"Using get_iplayer entrypoint from PGET_IPLAYER_COMMAND: {override}")
+        return override
+    if os.name == "nt":
+        candidates = ("get_iplayer.cmd", "get_iplayer.bat", "get_iplayer.exe", "get_iplayer")
+    else:
+        candidates = ("get_iplayer",)
+    for candidate in candidates:
+        resolved = shutil.which(candidate)
+        if resolved:
+            _debug_log(f"Found get_iplayer on PATH: {resolved}")
+            return resolved
+    if os.name == "nt":
+        probable_locations = []
+        for env_name in ("ProgramFiles", "ProgramFiles(x86)"):
+            base = os.environ.get(env_name)
+            if not base:
+                continue
+            probable_locations.append(Path(base) / "get_iplayer" / "get_iplayer.cmd")
+        for candidate in probable_locations:
+            if candidate.exists():
+                resolved = str(candidate)
+                _debug_log(f"Using get_iplayer entrypoint from installer path: {resolved}")
+                return resolved
+    resolved = candidates[0]
+    _debug_log(f"Fallback get_iplayer entrypoint: {resolved}")
+    return resolved
+
+
+@lru_cache(maxsize=1)
+def _get_iplayer_invocation() -> Tuple[str, ...]:
+    entrypoint = _resolve_get_iplayer_entrypoint()
+    if os.name == "nt":
+        lowered = entrypoint.lower()
+        if lowered.endswith((".cmd", ".bat")):
+            comspec = os.environ.get("COMSPEC", "cmd.exe")
+            invocation = (comspec, "/c", entrypoint)
+            _debug_log(f"get_iplayer invocation via COMSPEC: {_format_command(invocation)}")
+            return invocation
+    invocation = (entrypoint,)
+    _debug_log(f"get_iplayer invocation: {_format_command(invocation)}")
+    return invocation
 
 
 def _truncate_title(title: str, max_len: int = 10) -> str:
@@ -421,7 +480,11 @@ def _expand_pids(pids: Sequence[str]) -> list[str]:
             episode_pids = [
                 _normalise_pid(ep) for ep in get_bbc_episode_pids(pid)
             ]
-        except Exception:
+            if DEBUG_ENABLED:
+                _debug_log(f"Expanded {pid} into {episode_pids or '[no additional episodes]'}")
+        except Exception as exc:
+            if DEBUG_ENABLED:
+                _debug_log(f"Failed to expand {pid}: {exc!r}")
             episode_pids = []
 
         candidates = episode_pids or [pid]
@@ -658,7 +721,6 @@ def _run_get_iplayer(
     expected_download_dir = Path()
     while True:
         token = secrets.token_hex(4)
-        subdir_format = f".pget_iplayer-<pid>-{token}"
         subdir_name = f".pget_iplayer-{pid}-{token}"
         expected_download_dir = Path.cwd() / subdir_name
         if not expected_download_dir.exists():
@@ -675,12 +737,19 @@ def _run_get_iplayer(
                     results[pid] = 1
                 return
             break
-    command = _command_for_pid(pid, subdir_format)
+    expected_download_dir.mkdir(parents=True, exist_ok=True)
+    command = _command_for_pid(pid, expected_download_dir)
+    if DEBUG_ENABLED:
+        _debug_log(f"{pid}: using download subdir {subdir_name}")
+    _debug_log(f"{pid}: launching get_iplayer with command: {_format_command(command)}")
     download_dir: Path | None = None
     moved_video: Path | None = None
     master_fd: int | None = None
     slave_fd: int | None = None
     process: subprocess.Popen | None = None
+    output_queue: Queue[bytes] | None = None
+    reader_thread: threading.Thread | None = None
+    using_pty = os.name != "nt"
     decoder = None
     buffer = ""
     last_partial = ""
@@ -714,25 +783,38 @@ def _run_get_iplayer(
                     tqdm.write(f"{pid}: failed to remove download directory ({exc})")
 
     try:
-        try:
-            master_fd, slave_fd = os.openpty()
-        except OSError as exc:
-            with print_lock:
-                tqdm.write(f"{pid}: unable to allocate pty ({exc})")
-            with results_lock:
-                results[pid] = 1
-            return
+        if using_pty:
+            try:
+                master_fd, slave_fd = os.openpty()
+            except OSError as exc:
+                with print_lock:
+                    tqdm.write(f"{pid}: unable to allocate pty ({exc})")
+                _debug_log(f"{pid}: unable to allocate PTY ({exc})")
+                with results_lock:
+                    results[pid] = 1
+                return
 
         try:
-            process = subprocess.Popen(
-                command,
-                stdin=subprocess.DEVNULL,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                text=False,
-                bufsize=0,
-                close_fds=True,
-            )
+            if using_pty:
+                process = subprocess.Popen(
+                    command,
+                    stdin=subprocess.DEVNULL,
+                    stdout=slave_fd,
+                    stderr=slave_fd,
+                    text=False,
+                    bufsize=0,
+                    close_fds=True,
+                )
+            else:
+                process = subprocess.Popen(
+                    command,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=False,
+                    bufsize=0,
+                    close_fds=False,
+                )
         except FileNotFoundError:
             if master_fd is not None:
                 os.close(master_fd)
@@ -742,6 +824,7 @@ def _run_get_iplayer(
                 slave_fd = None
             with print_lock:
                 tqdm.write(f"{pid}: get_iplayer command not found")
+            _debug_log(f"{pid}: get_iplayer command not found when launching")
             with results_lock:
                 results[pid] = 127
             return
@@ -754,12 +837,37 @@ def _run_get_iplayer(
                 slave_fd = None
             with print_lock:
                 tqdm.write(f"{pid}: failed to start get_iplayer ({exc})")
+            _debug_log(f"{pid}: failed to start get_iplayer ({exc})")
             with results_lock:
                 results[pid] = 1
             return
 
-        os.close(slave_fd)
-        slave_fd = None
+        if using_pty and slave_fd is not None:
+            os.close(slave_fd)
+            slave_fd = None
+        elif not using_pty:
+            assert process is not None
+            stdout_pipe = process.stdout
+            if stdout_pipe is None:
+                raise RuntimeError("process stdout pipe not available on Windows")
+            output_queue = Queue()
+
+            def _drain_stdout(pipe: BinaryIO, queue: Queue[bytes]) -> None:
+                try:
+                    while True:
+                        chunk = pipe.read(1024)
+                        if not chunk:
+                            break
+                        queue.put(chunk)
+                except Exception:
+                    pass
+                finally:
+                    queue.put(b"")
+
+            reader_thread = threading.Thread(
+                target=_drain_stdout, args=(stdout_pipe, output_queue), daemon=True
+            )
+            reader_thread.start()
 
         colour = _get_colour(pid, colour)
         _start_pseudo_stream(pid, "waiting", colour)
@@ -768,21 +876,32 @@ def _run_get_iplayer(
         last_partial = ""
         try:
             while True:
-                ready, _, _ = select.select([master_fd], [], [], 0.1)
-                if not ready:
-                    if process.poll() is not None:
-                        break
-                    _tick_pseudo_stream(pid, "waiting", colour)
-                    _tick_pseudo_stream(pid, "converting", colour)
-                    continue
-                try:
-                    raw = os.read(master_fd, 1024)
-                except BlockingIOError:
-                    continue
-                except OSError as exc:
-                    if exc.errno == errno.EIO:
-                        break
-                    raise
+                if using_pty:
+                    ready, _, _ = select.select([master_fd], [], [], 0.1)
+                    if not ready:
+                        if process.poll() is not None:
+                            break
+                        _tick_pseudo_stream(pid, "waiting", colour)
+                        _tick_pseudo_stream(pid, "converting", colour)
+                        continue
+                    try:
+                        raw = os.read(master_fd, 1024)
+                    except BlockingIOError:
+                        continue
+                    except OSError as exc:
+                        if exc.errno == errno.EIO:
+                            break
+                        raise
+                else:
+                    assert output_queue is not None
+                    try:
+                        raw = output_queue.get(timeout=0.1)
+                    except Empty:
+                        if process.poll() is not None:
+                            break
+                        _tick_pseudo_stream(pid, "waiting", colour)
+                        _tick_pseudo_stream(pid, "converting", colour)
+                        continue
                 if not raw:
                     if process.poll() is not None:
                         break
@@ -812,7 +931,7 @@ def _run_get_iplayer(
                     _emit_line(pid, colour, buffer)
                     last_partial = buffer
         finally:
-            if master_fd is not None:
+            if master_fd is not None and using_pty:
                 os.close(master_fd)
                 master_fd = None
 
@@ -834,6 +953,7 @@ def _run_get_iplayer(
             _emit_line(pid, colour, buffer)
 
         return_code = process.wait()
+        _debug_log(f"{pid}: get_iplayer exited with code {return_code}")
         with results_lock:
             results[pid] = return_code
         with PROGRESS_LOCK:
@@ -853,6 +973,7 @@ def _run_get_iplayer(
         _complete_pseudo_stream(pid, "converting", colour)
 
         download_dir = _locate_download_directory(token, pid)
+        _debug_log(f"{pid}: located download directory {download_dir}")
         if download_dir and download_dir.exists():
             if return_code == 0:
                 video_path = _find_downloaded_video(download_dir)
@@ -878,6 +999,13 @@ def _run_get_iplayer(
                 with results_lock:
                     results[pid] = 1
     finally:
+        if reader_thread is not None:
+            reader_thread.join()
+        if process is not None and process.stdout:
+            try:
+                process.stdout.close()
+            except Exception:
+                pass
         if slave_fd is not None:
             try:
                 os.close(slave_fd)
@@ -997,11 +1125,14 @@ def get_bbc_episode_pids(pid: str, timeout: int = 120) -> list[str]:
     Return a clean list of BBC episode PIDs for a brand, series, or episode PID,
     using get_iplayer's recursive listing feature.
     """
+    base_command = list(_get_iplayer_invocation())
     cmd = [
-        "get_iplayer",
+        *base_command,
         f"--pid={pid}",
         "--pid-recursive-list",
     ]
+
+    _debug_log(f"Expanding PID {pid} with command: {_format_command(cmd)}")
 
     result = subprocess.run(
         cmd,
@@ -1009,6 +1140,12 @@ def get_bbc_episode_pids(pid: str, timeout: int = 120) -> list[str]:
         text=True,
         timeout=timeout,
     )
+
+    _debug_log(f"PID expansion command exited with code {result.returncode}")
+    if result.stdout:
+        _debug_log(f"PID expansion stdout:\n{result.stdout.strip() or '<empty>'}")
+    if result.stderr:
+        _debug_log(f"PID expansion stderr:\n{result.stderr.strip() or '<empty>'}")
 
     pid_pattern = re.compile(r"\b[a-z][a-z0-9]{7,10}\b")
 
@@ -1029,12 +1166,18 @@ def get_bbc_episode_pids(pid: str, timeout: int = 120) -> list[str]:
         if match:
             pids.append(match.group(0))
 
+    _debug_log(f"PID expansion result for {pid}: {pids or '[no matches]'}")
+
     return pids
 
 def main(argv: Sequence[str] | None = None) -> int:
     _reset_progress_state()
     parser = build_parser()
     args = parser.parse_args(argv)
+    global DEBUG_ENABLED
+    DEBUG_ENABLED = bool(getattr(args, "debug", False))
+    if DEBUG_ENABLED:
+        tqdm.write("[debug] Debug logging enabled")
 
     normalised_pids = [_normalise_pid(pid) for pid in args.pids]
     expanded_pids = _expand_pids(normalised_pids)

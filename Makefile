@@ -7,9 +7,15 @@ DOCKERFILE := Dockerfile
 DOCKER_USER := $(shell id -u):$(shell id -g)
 DOCKER_RUN_FLAGS := -v $(CURDIR):/workspace -w /workspace -u $(DOCKER_USER) \
 	-e HOME=/workspace --rm
+ifeq ($(OS),Windows_NT)
+NUITKA_STATIC_LIBPYTHON :=
+else
+NUITKA_STATIC_LIBPYTHON := --static-libpython=yes
+endif
+
 NUITKA_FLAGS := --assume-yes-for-downloads --remove-output --onefile \
 	--python-flag=-m --output-dir=$(OUTPUT_DIR) \
-	--output-filename=$(OUTPUT_FILE) --static-libpython=yes $(APP_NAME)
+	--output-filename=$(OUTPUT_FILE) $(NUITKA_STATIC_LIBPYTHON) $(APP_NAME)
 
 .PHONY: build clean distclean docker-image docker-build
 
