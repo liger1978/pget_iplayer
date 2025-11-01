@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.0](https://github.com/liger1978/pget_iplayer/compare/v0.5.0...v0.6.0) (2025-11-01)
+
+
+### Features
+
+* Improve pid collection and add tests ([57ffd75](https://github.com/liger1978/pget_iplayer/commit/57ffd75f6a9c031ffe47a5e7ac0c8a875491be7c))
+* Improve pid collection and add tests ([a6666e2](https://github.com/liger1978/pget_iplayer/commit/a6666e23f43c7c5f61a280c8ce2cb651126af61a))
+
 ## [0.5.0](https://github.com/liger1978/pget_iplayer/compare/v0.4.0...v0.5.0) (2025-11-01)
 
 
