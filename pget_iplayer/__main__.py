@@ -6,12 +6,13 @@ import sys
 from pathlib import Path
 
 
-if __package__ in (None, ""):
+try:
+    from pget_iplayer.cli import main
+except ImportError:  # pragma: no cover
     # When executed as a script (e.g. `uv run -- pget_iplayer`), ensure the project
     # root is on sys.path so absolute imports resolve correctly.
     sys.path.append(str(Path(__file__).resolve().parent.parent))
-
-from pget_iplayer.cli import main  # noqa: E402  (import after potential sys.path tweak)
+    from pget_iplayer.cli import main  # type: ignore[import]
 
 
 if __name__ == "__main__":

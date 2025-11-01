@@ -20,7 +20,7 @@ NUITKA_FLAGS := --assume-yes-for-downloads --remove-output --onefile \
 .PHONY: build clean distclean docker-image docker-build
 
 build:
-	$(UV) sync
+	$(UV) sync --group build
 	$(UV) run nuitka $(NUITKA_FLAGS)
 
 docker-image:
@@ -28,8 +28,20 @@ docker-image:
 
 docker-build: docker-image
 	docker run $(DOCKER_RUN_FLAGS) $(DOCKER_IMAGE) bash -c '\
-		$(UV) sync && \
+		$(UV) sync --group build && \
 		$(UV) run nuitka $(NUITKA_FLAGS)'
+
+install-git-hooks:
+	$(UV) sync --group check
+	$(UV) run pre-commit install
+
+check:
+	$(UV) sync --group check
+	$(UV) run pre-commit run
+
+check-all:
+	$(UV) sync --group check
+	$(UV) run pre-commit run --all-files
 
 clean:
 	rm -rf $(OUTPUT_DIR) || true
