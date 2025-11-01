@@ -1,33 +1,108 @@
 # pget_iplayer
 
-pget_iplayer is a thin Python wrapper that launches multiple `get_iplayer` downloads in parallel. Each download runs in its own thread and reports progress via colour-coded bars (one per pid/stream) so you can monitor multiple jobs at once.
+Pretty parallel iPlayer downloads!
 
-### Requirements
+![Alt Text](pget_iplayer.gif)
 
-- Python 3.12+
-- `get_iplayer` must be available on your `PATH`
+`pget_iplayer` is a wrapper that launches multiple `get_iplayer` downloads in parallel. Each download runs in its own thread and reports progress via colour-coded bars (one per pid/stream) so you can monitor multiple jobs at once.
 
-### Usage
+## Requirements
 
-```bash
-uv run -- pget_iplayer [-t THREADS] <PID> [PID ...]
-```
+On Linux, first install [`get_iplayer`](https://github.com/get-iplayer/get_iplayer/wiki/installation), `ffmpeg` and `AtomicParsley`.
 
-- Supply one or more BBC iPlayer PIDs or URLs (episode/series/brand) as positional arguments. URLs are normalised to the correct episode PID automatically.
-- Brand and series PIDs are expanded automatically so all child episodes are queued.
-- Every pid is downloaded via `get_iplayer --get --subtitles --subs-embed --force --overwrite --tv-quality=fhd,hd,sd --pid=<PID>`.
-- Use `-t/--threads` to limit concurrent downloads; defaults to your CPU core count (fallback to 4 if it cannot be detected).
-- Pass `-p/--plex` to rename completed video files to Plex's `Show - sXXeYY - Episode.ext` format.
-- Each download runs inside a hidden temporary directory named `.pget_iplayer-<PID>-<RANDOM>`; on success the finished video is moved back to the working directory and the temp folder is removed (including subtitle sidecars). Use `-n/--no-clean` if you want to inspect the download artefacts and keep the directory.
-- Output is summarised as per-stream progress bars (`audio`, `video`, etc.), colour-coded per pid, sorted by pid then stream name, and annotated with live speed + ETA.
+On MacOs, first install[ `get_player`](https://github.com/get-iplayer/get_iplayer_macos/releases/tag/latest).
 
-Example:
+On Windows, first install [`get_iplayer`](https://github.com/get-iplayer/get_iplayer_win32/releases/latest).
+
+## Installation
+
+The easiset way to install `pget_iplayer` is to download a zip file from releases, unzip it and run the compiled executable from a location of your choice. The following command line installation instructions are provided for convenience.
+
+### Linux
 
 ```bash
-uv run -- pget_iplayer -t 6 m000xyz1 m000xyz2 m000xyz3
+a=$(uname -m)
+case $a in
+  x86_64|amd64) arch=amd64 ;;
+  aarch64|arm64) arch=arm64 ;;
+esac
+wget "https://github.com/liger1978/pget_iplayer/releases/latest/download/pget_iplayer_linux_${arch}.tar.gz"
+tar xzf pget_iplayer_linux_${arch}.tar.gz
+sudo install -m 0755 ./pget_iplayer /usr/local/bin
+rm -f pget_iplayer_linux_${arch}.tar.gz pget_iplayer
 ```
 
-The command above will start three parallel downloads, each with audio/video progress bars rendered live.
+### MacOS
+
+```bash
+if [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ]; then
+    ARCH=arm64
+else
+    ARCH=amd64
+fi
+wget "https://github.com/liger1978/pget_iplayer/releases/latest/download/pget_iplayer_macos_${arch}.tar.gz"
+tar xzf pget_iplayer_macos_${arch}.tar.gz
+sudo install -m 0755 ./pget_iplayer /usr/local/bin
+rm -f pget_iplayer_macos_${arch}.tar.gz pget_iplayer
+```
+
+### Windows
+
+(PowerShell)
+```powershell
+$os = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+switch ($os) {
+  'Arm64' { $arch = 'arm64'; break }
+  'X64'   { $arch = 'amd64'; break }
+  default {
+    $a = if ($env:PROCESSOR_ARCHITECTURE -eq 'x86' -and $env:PROCESSOR_ARCHITEW6432) {
+      $env:PROCESSOR_ARCHITEW6432
+    } else { $env:PROCESSOR_ARCHITECTURE }
+    $arch = $a.ToLower().Replace('amd64','amd64').Replace('arm64','arm64')
+  }
+}
+iwr "https://github.com/liger1978/pget_iplayer/releases/latest/download/pget_iplayer_windows_${arch}.zip" -OutFile "pget_iplayer_windows_$arch.zip"
+Expand-Archive "pget_iplayer_windows_$arch.zip" -DestinationPath . -Force
+$dest = "$HOME\bin"
+New-Item -Force -ItemType Directory $dest
+Copy-Item "pget_iplayer.exe" "$dest\pget_iplayer.exe"
+Remove-Item "pget_iplayer_windows_$arch.zip" -Force
+Remove-Item "pget_iplayer.exe" -Force
+$u = [Environment]::GetEnvironmentVariable('Path','User')
+if ($u -notmatch [regex]::Escape($dest)) {
+  [Environment]::SetEnvironmentVariable('Path', "$dest;$u",'User')
+  Write-Host "Added $dest to your user PATH. Open a new shell to use it."
+}
+```
+## Usage
+
+```
+usage: pget-iplayer [-h] [-d] [-n] [-p] [-t THREADS] [--version] PID [PID ...]
+
+Parallel wrapper around get_iplayer for downloading multiple pids concurrently.
+
+positional arguments:
+  PID                   One or more BBC programme, series (season) or brand (show) PIDs or URLs to download.
+
+options:
+  -h, --help            show this help message and exit
+  -d, --debug           Enable verbose debug logging of get_iplayer interactions (default: False)
+  -n, --no-clean        Preserve the temporary download subdirectory instead of deleting it (default: False)
+  -p, --plex            Rename completed video files to Plex naming convention (default: False)
+  -t THREADS, --threads THREADS
+                        Maximum number of parallel download workers (default: 20)
+  --version             Display the installed version and exit.
+```
+
+## Development
+
+### Git hooks
+
+This project uses [pre-commit](https://pre-commit.com/) to keep formatting and linting consistent. After cloning the repository, install the hooks once:
+
+```
+make install-git-hooks
+```
 
 ### Building a standalone binary
 

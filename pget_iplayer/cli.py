@@ -65,6 +65,7 @@ class ColourStyle:
     tqdm_name: str
     ansi_code: str
 
+
 COLOUR_STYLES: Tuple[ColourStyle, ...] = (
     # Muted emerald – for active/highlight state
     ColourStyle("#1a4d41", "\033[38;2;26;77;65m"),
@@ -89,7 +90,7 @@ COLOUR_STYLES: Tuple[ColourStyle, ...] = (
     # Cognac amber – for warnings or emphasis
     ColourStyle("#b37537", "\033[38;2;179;117;55m"),
     # Muted burgundy – for errors or critical/high state
-    ColourStyle("#7a2f3b", "\033[38;2;122;47;59m")
+    ColourStyle("#7a2f3b", "\033[38;2;122;47;59m"),
 )
 
 STREAM_PRIORITY = ("waiting", "audio", "audio+video", "video", "converting")
@@ -274,7 +275,12 @@ def _resolve_get_iplayer_entrypoint() -> str:
         _debug_log(f"Using get_iplayer entrypoint from PGET_IPLAYER_COMMAND: {override}")
         return override
     if os.name == "nt":
-        candidates = ("get_iplayer.cmd", "get_iplayer.bat", "get_iplayer.exe", "get_iplayer")
+        candidates = (
+            "get_iplayer.cmd",
+            "get_iplayer.bat",
+            "get_iplayer.exe",
+            "get_iplayer",
+        )
     else:
         candidates = ("get_iplayer",)
     for candidate in candidates:
@@ -377,7 +383,11 @@ def _locate_download_directory(token: str, pid: str) -> Path | None:
         return expected
     suffix = f"-{pid}-{token}"
     for candidate in Path.cwd().iterdir():
-        if candidate.is_dir() and candidate.name.startswith(".pget_iplayer-") and candidate.name.endswith(suffix):
+        if (
+            candidate.is_dir()
+            and candidate.name.startswith(".pget_iplayer-")
+            and candidate.name.endswith(suffix)
+        ):
             return candidate
     return None
 
@@ -438,9 +448,7 @@ def _rename_video_for_plex(
         source_path.rename(destination)
     except OSError as exc:
         with print_lock:
-            tqdm.write(
-                f"{pid}: failed to rename {source_path.name} -> {destination.name} ({exc})"
-            )
+            tqdm.write(f"{pid}: failed to rename {source_path.name} -> {destination.name} ({exc})")
         return None
 
     with print_lock:
@@ -460,9 +468,7 @@ def _build_program_label(pid: str) -> str:
     season_number = _two_digit(metadata.get("season_number"))
     episode_number = _two_digit(metadata.get("episode_number"))
 
-    base = (
-        f"{pid}: {show} - s{season_number}e{episode_number} - {episode}"
-    )
+    base = f"{pid}: {show} - s{season_number}e{episode_number} - {episode}"
     if len(base) < PROGRAM_LABEL_WIDTH:
         base = base.ljust(PROGRAM_LABEL_WIDTH)
     elif len(base) > PROGRAM_LABEL_WIDTH:
@@ -477,9 +483,7 @@ def _expand_pids(pids: Sequence[str]) -> list[str]:
     for raw_pid in pids:
         pid = _normalise_pid(raw_pid)
         try:
-            episode_pids = [
-                _normalise_pid(ep) for ep in get_bbc_episode_pids(pid)
-            ]
+            episode_pids = [_normalise_pid(ep) for ep in get_bbc_episode_pids(pid)]
             if DEBUG_ENABLED:
                 _debug_log(f"Expanded {pid} into {episode_pids or '[no additional episodes]'}")
         except Exception as exc:
@@ -518,7 +522,7 @@ def _program_label(pid: str) -> str:
     if len(fallback) < PROGRAM_LABEL_WIDTH:
         fallback = fallback.ljust(PROGRAM_LABEL_WIDTH)
     else:
-        fallback = fallback[: PROGRAM_LABEL_WIDTH]
+        fallback = fallback[:PROGRAM_LABEL_WIDTH]
     return fallback
 
 
@@ -588,9 +592,7 @@ def _reassign_positions_locked() -> None:
     for position, key in enumerate(_sorted_keys()):
         bar = PROGRESS_BARS[key]
         pid, stream = key
-        speed, eta, completed = STREAM_STATE.get(
-            key, (None, None, key in COMPLETED_BARS)
-        )
+        speed, eta, completed = STREAM_STATE.get(key, (None, None, key in COMPLETED_BARS))
         bar.set_description_str(
             _compose_desc(pid, stream, bar.n, speed, eta, completed),
             refresh=False,
@@ -608,9 +610,7 @@ def _finalize_bars() -> list[str]:
         lines: list[str] = []
         for key, bar in zip(keys, bars):
             pid, stream = key
-            speed, eta, completed = STREAM_STATE.get(
-                key, (None, None, key in COMPLETED_BARS)
-            )
+            speed, eta, completed = STREAM_STATE.get(key, (None, None, key in COMPLETED_BARS))
             percent = 0.0
             if bar.total:
                 percent = (bar.n / bar.total) * 100
@@ -730,9 +730,7 @@ def _run_get_iplayer(
                 shutil.rmtree(expected_download_dir)
             except OSError as exc:
                 with print_lock:
-                    tqdm.write(
-                        f"{pid}: unable to clear previous download directory ({exc})"
-                    )
+                    tqdm.write(f"{pid}: unable to clear previous download directory ({exc})")
                 with results_lock:
                     results[pid] = 1
                 return
@@ -1022,12 +1020,14 @@ def _run_get_iplayer(
 def _cycle_colors() -> Iterable[ColourStyle]:
     return itertools.cycle(COLOUR_STYLES if COLOUR_STYLES else (ColourStyle("white"),))
 
+
 def _safe_int_to_str(n: Optional[int]) -> str:
     if isinstance(n, int):
         return str(n)
     if isinstance(n, str) and n.isdigit():
         return n
     return ""
+
 
 def _extract_broadcast_date(node: dict) -> str:
     """Return YYYYMMDD from first_broadcast_date if available."""
@@ -1039,6 +1039,7 @@ def _extract_broadcast_date(node: dict) -> str:
         return dt.strftime("%Y%m%d")
     except Exception:
         return ""
+
 
 def bbc_metadata_from_pid(pid: str, timeout: int = 10) -> Dict[str, str]:
     """
@@ -1120,6 +1121,7 @@ def bbc_metadata_from_pid(pid: str, timeout: int = 10) -> Dict[str, str]:
         "episode_title": episode_title,
     }
 
+
 def get_bbc_episode_pids(pid: str, timeout: int = 120) -> list[str]:
     """
     Return a clean list of BBC episode PIDs for a brand, series, or episode PID,
@@ -1169,6 +1171,7 @@ def get_bbc_episode_pids(pid: str, timeout: int = 120) -> list[str]:
     _debug_log(f"PID expansion result for {pid}: {pids or '[no matches]'}")
 
     return pids
+
 
 def main(argv: Sequence[str] | None = None) -> int:
     _reset_progress_state()
