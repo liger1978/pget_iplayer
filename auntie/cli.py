@@ -1,4 +1,4 @@
-"""Command-line interface for the pget_iplayer project."""
+"""Command-line interface for the auntie project."""
 
 from __future__ import annotations
 
@@ -152,48 +152,47 @@ def _reset_progress_state() -> None:
 def build_parser() -> argparse.ArgumentParser:
     """Construct the top-level argument parser for the CLI."""
     parser = argparse.ArgumentParser(
-        prog="pget-iplayer",
-        description=(
-            "Parallel wrapper around get_iplayer for downloading multiple pids concurrently."
-        ),
+        prog="auntie",
+        description=("download multiple BBC iPlayer programmes in parallel."),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "pids",
         metavar="PID",
         nargs="+",
-        help="One or more BBC programme, series (season) or brand (show) PIDs or URLs to download.",
+        help="one or more BBC programme, series (season) or brand (show) PIDs or URLs to download.",
     )
     parser.add_argument(
         "-d",
         "--debug",
         action="store_true",
-        help="Enable verbose debug logging of get_iplayer interactions",
+        help="enable verbose debug logging of get_iplayer interactions",
     )
     parser.add_argument(
         "-n",
         "--no-clean",
         action="store_true",
-        help="Preserve the temporary download subdirectory instead of deleting it",
+        help="preserve the temporary download subdirectory instead of deleting it",
     )
     parser.add_argument(
         "-p",
         "--plex",
         action="store_true",
-        help="Rename completed video files to Plex naming convention",
+        help="rename completed video files to Plex naming convention",
     )
     parser.add_argument(
         "-t",
         "--threads",
         type=int,
         default=os.cpu_count() or 4,
-        help="Maximum number of parallel download workers",
+        help="maximum number of parallel download workers",
     )
     parser.add_argument(
+        "-v",
         "--version",
         action="version",
         version=f"%(prog)s {__version__}",
-        help="Display the installed version and exit.",
+        help="display the installed version and exit",
     )
     return parser
 
@@ -319,9 +318,9 @@ def _normalise_pid(value: str) -> str:
 
 @lru_cache(maxsize=1)
 def _resolve_get_iplayer_entrypoint() -> str:
-    override = os.environ.get("PGET_IPLAYER_COMMAND")
+    override = os.environ.get("GET_IPLAYER_COMMAND")
     if override:
-        _debug_log(f"Using get_iplayer entrypoint from PGET_IPLAYER_COMMAND: {override}")
+        _debug_log(f"Using get_iplayer entrypoint from GET_IPLAYER_COMMAND: {override}")
         return override
     if os.name == "nt":
         candidates = (
@@ -427,14 +426,14 @@ def _ensure_unique_path(directory: Path, filename: str) -> Path:
 
 
 def _locate_download_directory(token: str, pid: str) -> Path | None:
-    expected = Path.cwd() / f".pget_iplayer-{pid}-{token}"
+    expected = Path.cwd() / f".auntie-{pid}-{token}"
     if expected.exists():
         return expected
     suffix = f"-{pid}-{token}"
     for candidate in Path.cwd().iterdir():
         if (
             candidate.is_dir()
-            and candidate.name.startswith(".pget_iplayer-")
+            and candidate.name.startswith(".auntie-")
             and candidate.name.endswith(suffix)
         ):
             return candidate
@@ -770,7 +769,7 @@ def _run_get_iplayer(
     expected_download_dir = Path()
     while True:
         token = secrets.token_hex(4)
-        subdir_name = f".pget_iplayer-{pid}-{token}"
+        subdir_name = f".auntie-{pid}-{token}"
         expected_download_dir = Path.cwd() / subdir_name
         if not expected_download_dir.exists():
             break

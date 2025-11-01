@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import types
 
-from pget_iplayer import cli
+from auntie import cli
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "bbc"
@@ -156,7 +156,7 @@ def test_ensure_unique_path_appends_suffix(tmp_path):
 
 
 def test_locate_download_directory_prefers_exact_match(temp_cwd):
-    expected = temp_cwd / ".pget_iplayer-p0abc123-1a2b3c4d"
+    expected = temp_cwd / ".auntie-p0abc123-1a2b3c4d"
     expected.mkdir()
     found = cli._locate_download_directory("1a2b3c4d", "p0abc123")
     assert found == expected

@@ -1,4 +1,4 @@
-from pget_iplayer.cli import main
+from auntie.cli import main
 
 
 if __name__ == "__main__":
