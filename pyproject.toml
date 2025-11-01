@@ -1,5 +1,5 @@
 [project]
-name = "pget-iplayer"
+name = "auntie"
 version = "0.6.1"
 description = "Add your description here"
 readme = "README.md"
@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [project.scripts]
-pget_iplayer = "pget_iplayer.cli:main"
+auntie = "auntie.cli:main"
 
 [dependency-groups]
 build = [

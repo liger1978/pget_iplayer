@@ -46,16 +46,16 @@ jobs:
       - run: make build
       - if: matrix.os != 'windows'
         run: |
-          chmod +x build/pget_iplayer
-          tar -czf build/pget_iplayer_${{ matrix.os }}_${{ matrix.arch }}${{ matrix.upload }} -C build pget_iplayer
+          chmod +x build/auntie
+          tar -czf build/auntie_${{ matrix.os }}_${{ matrix.arch }}${{ matrix.upload }} -C build auntie
       - if: matrix.os == 'windows'
-        run: Compress-Archive -Path build/pget_iplayer.exe -Destination build/pget_iplayer_${{ matrix.os }}_${{ matrix.arch }}${{ matrix.upload }}
+        run: Compress-Archive -Path build/auntie.exe -Destination build/auntie_${{ matrix.os }}_${{ matrix.arch }}${{ matrix.upload }}
       - if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v5
         with:
-          name: pget_iplayer_${{ matrix.os }}_${{ matrix.arch }}${{ matrix.upload }}
-          path: build/pget_iplayer_${{ matrix.os }}_${{ matrix.arch }}${{ matrix.upload }}
+          name: auntie_${{ matrix.os }}_${{ matrix.arch }}${{ matrix.upload }}
+          path: build/auntie_${{ matrix.os }}_${{ matrix.arch }}${{ matrix.upload }}
       - if: github.event_name == 'push' && needs.release.outputs.release_created
         run: |
-          gh release upload ${{ needs.release.outputs.tag_name }} build/pget_iplayer_${{ matrix.os }}_${{ matrix.arch }}${{ matrix.upload }}
+          gh release upload ${{ needs.release.outputs.tag_name }} build/auntie_${{ matrix.os }}_${{ matrix.arch }}${{ matrix.upload }}
         env: {GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'}

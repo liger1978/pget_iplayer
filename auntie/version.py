@@ -1,4 +1,4 @@
-"""Version information for the pget_iplayer package."""
+"""Version information for the auntie package."""
 
 __all__ = ["__version__"]
 

@@ -1,5 +1,5 @@
 UV := uv
-APP_NAME := pget_iplayer
+APP_NAME := auntie
 OUTPUT_DIR := build
 OUTPUT_FILE := $(APP_NAME)
 DOCKER_IMAGE := $(APP_NAME):latest
