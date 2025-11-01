@@ -9,6 +9,6 @@ except ImportError:
         __version__ = metadata.version("pget-iplayer")
     except metadata.PackageNotFoundError:
         # Fallback during local development when the package is not installed.
-        __version__ = "0.0.0"
+        __version__ = "0.6.1"
 
 __all__ = ["__version__"]

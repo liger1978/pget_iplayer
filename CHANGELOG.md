@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/liger1978/pget_iplayer/compare/v0.6.0...v0.6.1) (2025-11-01)
+
+
+### Bug Fixes
+
+* make --version work ([#28](https://github.com/liger1978/pget_iplayer/issues/28)) ([de8233a](https://github.com/liger1978/pget_iplayer/commit/de8233a49df5926a742946a63ad6190dd33024a4))
+
 ## [0.6.0](https://github.com/liger1978/pget_iplayer/compare/v0.5.0...v0.6.0) (2025-11-01)
 
 
