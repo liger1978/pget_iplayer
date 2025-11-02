@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/liger1978/auntie/compare/v1.0.0...v1.1.0) (2025-11-02)
+
+
+### Features
+
+* Refactor ([#33](https://github.com/liger1978/auntie/issues/33)) ([b77e810](https://github.com/liger1978/auntie/commit/b77e810747e1c62eb15b1de46bc817af2cca056d))
+
 ## [1.0.0](https://github.com/liger1978/pget_iplayer/compare/v0.6.1...v1.0.0) (2025-11-01)
 
 
