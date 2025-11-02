@@ -197,7 +197,30 @@ class ProgressTracker:
                 desc = self._compose_desc(pid, stream, percent, speed, eta, completed)
                 if completed:
                     desc = desc.rstrip() + " "
-                bar_segment = bar.format_dict["bar"]
+                format_dict = bar.format_dict
+                bar_segment = format_dict.get("bar")
+                if not bar_segment:
+                    try:
+                        bar_segment = tqdm.format_meter(
+                            format_dict["n"],
+                            format_dict["total"],
+                            format_dict["elapsed"],
+                            ncols=format_dict["ncols"],
+                            prefix="",
+                            ascii=format_dict["ascii"],
+                            unit=format_dict["unit"],
+                            unit_scale=format_dict["unit_scale"],
+                            rate=format_dict["rate"],
+                            bar_format="{bar}",
+                            postfix=format_dict["postfix"],
+                            unit_divisor=format_dict["unit_divisor"],
+                            initial=format_dict["initial"],
+                            colour=None,
+                        )
+                    except Exception:
+                        bar_segment = ""
+                if bar_segment is None:
+                    bar_segment = ""
                 if colour_style:
                     bar_segment = f"{colour_style.ansi_code}{bar_segment}{RESET}"
                 lines.append(f"{desc}|{bar_segment}|")
